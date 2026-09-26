@@ -1,8 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateKoreanSubtitle, prepareKoreanPlayback, rankReanimeCandidates, nextKoreanHistoryUrl } from '../src/lib/korean-playback.ts';
+import {prepareKoreanSubtitles} from '../src/lib/korean-playback.ts';
 
 const valid = {name:'번역자',episode:1,orig_filename:'작품 1화.vtt',format:'VTT',is_ass:false,content:'WEBVTT\n\n00:00:01.000 --> 00:00:03.000\n안녕하세요\n'};
+test('server subtitle preflight is independent of Reanime and preserves the mapped episode',async()=>{
+  const ready=await prepareKoreanSubtitles({episode:1,offset:12},async()=>({subtitles:[valid],creators:[],status:'ready'}));
+  assert.equal(ready.status,'subtitles_ready');assert.equal(ready.videoEpisode,13);
+  const invalid=await prepareKoreanSubtitles({episode:1,offset:12},async()=>({subtitles:[{...valid,episode:12}],creators:[],status:'ready'}));
+  assert.equal(invalid.status,'not_found');assert.equal(invalid.subtitles.length,0);
+  let searched=false;
+  const missing=await prepareKoreanSubtitles({episode:1,offset:-2},async()=>{searched=true;});
+  assert.equal(missing.status,'episode_missing');assert.equal(searched,false);
+});
 test('promoted history preserves the Korean route and subtitle episode offset', () => {
   assert.equal(nextKoreanHistoryUrl('/korean/123?ep=1',13,14),'/korean/123?ep=2');
   assert.equal(nextKoreanHistoryUrl('/korean/123?ep=0',1,2),'/korean/123?ep=1');

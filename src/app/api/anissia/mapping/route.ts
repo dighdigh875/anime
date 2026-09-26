@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser } from '@/lib/auth';
-import { getAnissiaAnime, searchReanimeCandidates } from '@/lib/anissia';
+import { getAnissiaAnime } from '@/lib/anissia';
+import {searchReanimeCandidates, ReanimeRequestError} from '@/lib/reanime-api';
 import { getAnimeMapping, saveAnimeMapping } from '@/lib/anime-mapping';
-import { getAnimeDetail } from '@/lib/providers/reanime';
 import { getReanimeBaseUrl } from '@/lib/db';
 
 export const maxDuration = 30;
@@ -17,15 +17,21 @@ export async function GET(request: NextRequest) {
   try {
     if (p.get('search') === '1') {
       const anime = await getAnissiaAnime(id);
-      const candidates = await searchReanimeCandidates(anime, await getReanimeBaseUrl(), p.get('q')?.trim().slice(0, 120) || undefined);
-      return NextResponse.json({candidates}, {headers});
+      const baseUrl = await getReanimeBaseUrl();
+      try {
+        const candidates = await searchReanimeCandidates(anime, baseUrl, p.get('q')?.trim().slice(0, 120) || undefined, request.signal);
+        return NextResponse.json({candidates}, {headers});
+      } catch (error) {
+        console.error('[Anissia Reanime search]', {status: error instanceof ReanimeRequestError ? error.status : undefined, message: error instanceof Error ? error.message : 'Unknown error'});
+        return NextResponse.json({code: 'REANIME_UNAVAILABLE', baseUrl, error: error instanceof ReanimeRequestError ? error.message : 'Reanime 검색에 연결하지 못했습니다.'}, {status: 502, headers});
+      }
     }
     const mapping = await getAnimeMapping(user.username, id);
-    const detail = mapping ? await getAnimeDetail(mapping.reanimeId) : null;
-    return NextResponse.json({mapping, detail}, {headers});
+    return NextResponse.json({mapping}, {headers});
   } catch (error) {
     console.error('[Anissia mapping GET]', error);
-    return NextResponse.json({error: '작품 연결을 불러오지 못했습니다. DB 연결과 Reanime 상태를 확인해 주세요.'}, {status: 502});
+    const search = p.get('search') === '1';
+    return NextResponse.json({code: search ? 'ANISSIA_UNAVAILABLE' : 'DATABASE_ERROR', error: search ? '애니시아 작품 정보를 불러오지 못했습니다.' : '저장된 작품 연결을 읽지 못했습니다. DB 연결을 확인해 주세요.'}, {status: 503, headers});
   }
 }
 
@@ -38,14 +44,18 @@ export async function POST(request: NextRequest) {
       || !Number.isInteger(episodeOffset) || Math.abs(episodeOffset) > 5000) {
       return NextResponse.json({error: '작품과 회차 차이를 확인해 주세요.'}, {status: 400});
     }
-    await getAnissiaAnime(animeNo);
-    const detail = await getAnimeDetail(reanimeId);
-    if (!detail) return NextResponse.json({error: '선택한 Reanime 작품을 확인하지 못했습니다.'}, {status: 502});
+    try { await getAnissiaAnime(animeNo); }
+    catch (error) {
+      console.error('[Anissia mapping metadata]', error);
+      return NextResponse.json({code: 'ANISSIA_UNAVAILABLE', error: '애니시아 작품 정보를 불러오지 못했습니다.'}, {status: 502, headers});
+    }
+    // This is a personal preference, not a cache of browser-supplied URLs or metadata.
+    // The client verifies the selected detail before saving; a provider outage must not block the DB write.
     const mapping = {reanimeId, episodeOffset};
     await saveAnimeMapping(user.username, animeNo, mapping);
-    return NextResponse.json({mapping, detail}, {headers});
+    return NextResponse.json({mapping}, {headers});
   } catch (error) {
     console.error('[Anissia mapping POST]', error);
-    return NextResponse.json({error: '작품 연결을 저장하지 못했습니다. DB 연결을 확인해 주세요.'}, {status: 503});
+    return NextResponse.json({code: 'DATABASE_ERROR', error: '작품 연결을 저장하지 못했습니다. DB 연결을 확인해 주세요.'}, {status: 503, headers});
   }
 }

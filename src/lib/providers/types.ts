@@ -45,6 +45,7 @@ export interface EpisodeStreamInfo {
   vtt_url: string;
   player_url: string;
   embed_url?: string;
+  reanime_watch_page?: boolean;
   stream_type?: "m3u8" | "iframe";
   server_sources: ServerSource[];
   link_next: string;

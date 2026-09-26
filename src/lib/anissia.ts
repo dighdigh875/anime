@@ -1,4 +1,4 @@
-import { rankReanimeCandidates, type ReanimeCandidate } from './korean-playback';
+export {searchReanimeCandidates} from './reanime-api';
 
 export interface AnissiaAnime {
   animeNo: number;
@@ -37,25 +37,4 @@ export async function listAnissiaAnime(query = '', page = 0, week = '6') {
   const data = await request<AnissiaAnime[]>(`schedule/${week}`);
   if (!Array.isArray(data)) throw new Error('편성표 응답을 읽지 못했습니다.');
   return {items: data, hasNext: false, page: 0};
-}
-
-export async function searchReanimeCandidates(anime: AnissiaAnime, baseUrl: string, query?: string): Promise<ReanimeCandidate[]> {
-  const terms = query ? [query] : Array.from(new Set([anime.originalSubject, anime.subject].filter(Boolean)));
-  const batches = await Promise.all(terms.map(async term => {
-    const response = await fetch(`${baseUrl}/api/v1/search?q=${encodeURIComponent(term)}`, {
-      headers: {Accept: 'application/json', Referer: `${baseUrl}/`}, signal: AbortSignal.timeout(10000),
-    });
-    if (!response.ok) throw new Error('Reanime 작품 검색에 실패했습니다.');
-    const json = await response.json();
-    if (!Array.isArray(json.results)) throw new Error('Reanime 검색 응답을 읽지 못했습니다.');
-    return json.results.map((item: any): ReanimeCandidate => ({
-      id: `re_${item.anime_id}`, title: item.title?.english || item.title?.romaji || item.title?.native || '',
-      nativeTitle: item.title?.native || '', romajiTitle: item.title?.romaji || '',
-      poster: item.cover_image?.large || item.cover_image?.medium || '',
-      year: String(item.season_year || item.start_date?.year || ''), episodes: Number(item.episodes || 0), format: item.format || '',
-    }));
-  }));
-  const unique = new Map<string, ReanimeCandidate>();
-  batches.flat().filter(c => /^re_[a-zA-Z0-9_-]+$/.test(c.id)).forEach(c => unique.set(c.id, c));
-  return rankReanimeCandidates(anime, Array.from(unique.values()));
 }

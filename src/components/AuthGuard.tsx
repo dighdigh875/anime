@@ -2,6 +2,13 @@
 
 import { useEffect } from "react";
 
+export function isSessionExpired(status: number, requestUrl: string, pageUrl: string): boolean {
+  const page = new URL(pageUrl);
+  const request = new URL(requestUrl, page);
+  return status === 401 && request.origin === page.origin && request.pathname.startsWith('/api/')
+    && !request.pathname.startsWith('/api/auth/') && !page.pathname.startsWith('/login') && !page.pathname.startsWith('/setup');
+}
+
 /**
  * 보안: 전역 401 인터셉터
  *
@@ -32,12 +39,7 @@ export default function AuthGuard() {
               : input instanceof URL
                 ? input.href
                 : input.url;
-          const url = new URL(raw, window.location.origin);
-          const isAuthEndpoint = url.pathname.startsWith("/api/auth/");
-          const onAuthPage =
-            window.location.pathname.startsWith("/login") ||
-            window.location.pathname.startsWith("/setup");
-          if (!isAuthEndpoint && !onAuthPage) {
+          if (isSessionExpired(res.status, raw, window.location.href)) {
             window.location.href = "/login";
           }
         }

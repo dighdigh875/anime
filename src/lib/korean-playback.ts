@@ -65,6 +65,19 @@ export function rankReanimeCandidates(
     .sort((a, b) => Number(b.exactMatch) - Number(a.exactMatch));
 }
 
+export async function prepareKoreanSubtitles(
+  input: {episode: number; offset: number}, findSubtitles: () => Promise<SubtitleSearchResult>,
+) {
+  const videoEpisode = input.episode + input.offset;
+  if (!Number.isFinite(videoEpisode) || videoEpisode < 0 || videoEpisode > 10000) {
+    return {status: 'episode_missing' as const, videoEpisode, subtitles: [], creators: []};
+  }
+  const found = await findSubtitles();
+  const subtitles = found.subtitles.filter(s => s.episode === input.episode && validateKoreanSubtitle(s));
+  if (!subtitles.length) return {...found, subtitles, status: found.status === 'ready' ? 'not_found' as const : found.status, videoEpisode};
+  return {status: 'subtitles_ready' as const, subtitles, creators: found.creators, videoEpisode};
+}
+
 export async function prepareKoreanPlayback(
   input: { episode: number; offset: number; episodes: EpisodeItem[] },
   dependencies: {
@@ -75,9 +88,9 @@ export async function prepareKoreanPlayback(
   const videoEpisode = input.episode + input.offset;
   const episode = input.episodes.find(e => e.number === videoEpisode);
   if (!episode) return {status: 'episode_missing' as const, videoEpisode, subtitles: [], creators: []};
-  const found = await dependencies.findSubtitles();
-  const subtitles = found.subtitles.filter(s => s.episode === input.episode && validateKoreanSubtitle(s));
-  if (!subtitles.length) return {...found, subtitles, status: found.status === 'ready' ? 'not_found' as const : found.status, videoEpisode};
+  const found = await prepareKoreanSubtitles(input, dependencies.findSubtitles);
+  if (found.status !== 'subtitles_ready') return found;
+  const {subtitles} = found;
   // This call must stay after validation. A failed preflight never loads video.
   const stream = await dependencies.getStream(episode.watch_url);
   if (!stream?.embed_url && !stream?.m3u8_url) return {status: 'stream_error' as const, subtitles, creators: found.creators, videoEpisode};
