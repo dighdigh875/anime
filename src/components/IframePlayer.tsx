@@ -49,6 +49,8 @@ interface IframePlayerProps {
   embedUrl?: string;
   allowNestedPlayback?: boolean;
   initialSubtitles?: SubtitleOption[];
+  initialCreators?: CreatorInfo[];
+  subtitleSelectionDisabled?: boolean;
   subtitleEpisodeNumber?: number;
   watchPageUrl?: string;
   backUrl?: string;
@@ -73,6 +75,8 @@ export default function IframePlayer({
   embedUrl = "",
   allowNestedPlayback = false,
   initialSubtitles,
+  initialCreators,
+  subtitleSelectionDisabled = false,
   subtitleEpisodeNumber = episodeNumber,
   watchPageUrl,
   backUrl,
@@ -106,6 +110,7 @@ export default function IframePlayer({
   const [loadingSubs, setLoadingSubs] = useState(false);
   const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
   const [assReady, setAssReady] = useState(false);
+  const hasSubtitle = Boolean(subtitles[currentSubIndex]?.content);
 
   const syncDebounceTimer = useRef<NodeJS.Timeout | null>(null);
   const lastHistorySaveTime = useRef(0);
@@ -257,10 +262,15 @@ export default function IframePlayer({
     [animeId, episodeNumber, subtitles, currentSubIndex]
   );
 
+  useEffect(() => {
+    if (initialCreators) setCreators(initialCreators);
+  }, [initialCreators]);
+
   // 5. Fetch Korean subtitles for this anime
   useEffect(() => {
     if (initialSubtitles) {
       setSubtitles(initialSubtitles); setCurrentSubIndex(0); setLoadingSubs(false);
+      if (initialSubtitles.length) setIsSubEnabled(true);
       return;
     }
     let isCancelled = false;
@@ -305,6 +315,12 @@ export default function IframePlayer({
   // 6. When currentSub changes, parse cues or setup SubtitlesOctopus
   useEffect(() => {
     const sub = subtitles[currentSubIndex];
+    setCues([]); setFirstDialogue(null);
+    lastHudTextRef.current = null;
+    if (hudTextRef.current) {
+      hudTextRef.current.replaceChildren();
+      hudTextRef.current.style.display = 'none';
+    }
     if (!sub || !sub.content) return;
     let subtitleBlobUrl: string | undefined;
     let stopObservingCanvas: (() => void) | undefined;
@@ -525,6 +541,7 @@ export default function IframePlayer({
   };
 
   const handleSelectSubtitle = (selectedSub: SubtitleOption) => {
+    setIsSubEnabled(true);
     setSubtitles((prev) => {
       const idx = prev.findIndex((s) => s.name === selectedSub.name);
       if (idx >= 0) {
@@ -638,7 +655,7 @@ export default function IframePlayer({
         <canvas
           ref={canvasRef}
           className="absolute inset-0 h-full w-full pointer-events-none z-10"
-          style={{visibility: isSubEnabled ? 'visible' : 'hidden'}}
+          style={{visibility: hasSubtitle && isSubEnabled ? 'visible' : 'hidden'}}
         />
 
         {/* Layer 2b: Text / VTT Subtitle HUD Overlay */}
@@ -672,12 +689,13 @@ export default function IframePlayer({
           <div className="flex flex-wrap items-center gap-2">
             <span className="flex items-center gap-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-1 text-xs font-bold text-emerald-400">
               <Subtitles className="h-3.5 w-3.5" />
-              {subtitles[currentSubIndex]?.name || "자막 연동 중..."}
+              {subtitles[currentSubIndex]?.name || (loadingSubs ? "자막 검색 중…" : "한글 자막 없음")}
             </span>
 
             <button
+              disabled={subtitleSelectionDisabled}
               onClick={() => setIsModalOpen(true)}
-              className="flex items-center gap-1.5 rounded-lg border border-purple-500/30 bg-purple-600/20 px-2.5 py-1 text-xs font-bold text-purple-300 transition hover:bg-purple-600 hover:text-white active:scale-95"
+              className="flex items-center gap-1.5 rounded-lg border border-purple-500/30 bg-purple-600/20 px-2.5 py-1 text-xs font-bold text-purple-300 transition hover:bg-purple-600 hover:text-white active:scale-95 disabled:opacity-40"
               title="다른 자막 제작자 선택, 수동 검색, 내 파일 직접 열기"
             >
               <Search className="h-3.5 w-3.5" />
@@ -727,7 +745,7 @@ export default function IframePlayer({
         {/* Row 2: Fine-Tuning Sync Offset & Tooling */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           {/* Sync Offset Adjuster */}
-          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          {hasSubtitle ? <div className="flex flex-wrap items-center gap-1.5 text-xs">
             <span className="font-bold text-slate-400 mr-1">싱크 미세조절:</span>
             <button
               onClick={() => adjustSync(-5.0)}
@@ -785,11 +803,11 @@ export default function IframePlayer({
                 <Check className="h-3 w-3" /> 저장됨
               </span>
             )}
-          </div>
+          </div> : <p className="text-xs leading-5 text-slate-400">원본 자막은 영상 안의 자막 메뉴에서 선택하세요. 한글 자막은 재생 중에도 추가할 수 있습니다.</p>}
 
           {/* Subtitle Toggle, Size & Fullscreen */}
           <div className="flex items-center gap-2">
-            <button
+            {hasSubtitle && <><button
               onClick={() => setIsSubEnabled(!isSubEnabled)}
               className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
                 isSubEnabled
@@ -807,7 +825,7 @@ export default function IframePlayer({
             >
               <Type className="h-3.5 w-3.5 text-purple-400" />
               {subSize === "small" ? "작게" : subSize === "normal" ? "보통" : "크게"}
-            </button>
+            </button></>}
 
             <button
               onClick={toggleFullscreen}
