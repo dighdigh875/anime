@@ -24,6 +24,7 @@ import { EpisodeItem } from "./Player";
 import SubtitleSelectModal, { CreatorInfo, SubtitleOption } from "./SubtitleSelectModal";
 import {isPlaybackMessage, pollPlaybackTime} from "@/lib/iframe-playback";
 import {ReanimeViewportControls, useReanimeViewport} from "./ReanimeViewport";
+import {observeAssCanvasSize, subtitleFragment} from "@/lib/subtitle-rendering";
 
 interface SubtitleCue {
   start: number;
@@ -82,6 +83,7 @@ export default function IframePlayer({
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hudTextRef = useRef<HTMLDivElement>(null);
+  const lastHudTextRef = useRef<string | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const octopusRef = useRef<any>(null);
 
@@ -305,6 +307,8 @@ export default function IframePlayer({
     const sub = subtitles[currentSubIndex];
     if (!sub || !sub.content) return;
     let subtitleBlobUrl: string | undefined;
+    let stopObservingCanvas: (() => void) | undefined;
+    lastHudTextRef.current = null;
 
     if (sub.is_ass) {
       const parsed = parseAssToCues(sub.content);
@@ -337,6 +341,9 @@ export default function IframePlayer({
               console.error("SubtitlesOctopus error:", e);
             },
           });
+          if (videoSurfaceRef.current) {
+            stopObservingCanvas = observeAssCanvasSize(videoSurfaceRef.current, octopusRef.current);
+          }
         } catch (e) {
           console.error("Failed to init SubtitlesOctopus:", e);
         }
@@ -344,13 +351,14 @@ export default function IframePlayer({
     } else {
       const parsed = parseVttToCues(sub.content);
       setCues(parsed);
-      if (parsed.length > 0) setFirstDialogue(parsed[0]);
+      if (parsed.length > 0) setFirstDialogue({...parsed[0], text: subtitleFragment(parsed[0].text, document).textContent || ''});
       if (octopusRef.current) {
         octopusRef.current.dispose();
         octopusRef.current = null;
       }
     }
     return () => {
+      stopObservingCanvas?.();
       if (octopusRef.current) {octopusRef.current.dispose(); octopusRef.current = null;}
       if (subtitleBlobUrl) URL.revokeObjectURL(subtitleBlobUrl);
     };
@@ -421,7 +429,10 @@ export default function IframePlayer({
             const effectiveTime = time + syncOffset;
             const matched = cues.find((c) => effectiveTime >= c.start && effectiveTime <= c.end);
             if (matched) {
-              hudTextRef.current.innerText = matched.text;
+              if (lastHudTextRef.current !== matched.text) {
+                hudTextRef.current.replaceChildren(subtitleFragment(matched.text, document));
+                lastHudTextRef.current = matched.text;
+              }
               hudTextRef.current.style.display = "block";
             } else {
               hudTextRef.current.style.display = "none";
@@ -457,9 +468,6 @@ export default function IframePlayer({
 
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
-      if (octopusRef.current && typeof octopusRef.current.resize === "function") {
-        setTimeout(() => octopusRef.current?.resize?.(), 100);
-      }
     };
     document.addEventListener("fullscreenchange", handleFullscreenChange);
 
@@ -639,6 +647,7 @@ export default function IframePlayer({
             ref={hudTextRef}
             className={`font-black text-white text-center max-w-[88%] px-4 py-1.5 rounded-xl transition-all duration-75 select-none ${subSizeClasses[subSize]}`}
             style={{
+              whiteSpace: 'pre-wrap',
               textShadow:
                 "-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, -3px 0 0 #000, 3px 0 0 #000, 0 -3px 0 #000, 0 3px 0 #000, 0 4px 14px rgba(0, 0, 0, 0.95)",
               display: "none",

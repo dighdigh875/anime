@@ -7,6 +7,26 @@ const anime={originalSubject:'ヤニねこ',subject:'담배 고양이',startDate
 const base='https://reanime.to';
 async function withFetch(fn, run) {const old=globalThis.fetch;globalThis.fetch=fn;try {await run();} finally {globalThis.fetch=old;}}
 
+test('empty title searches retry without wave punctuation while preserving the season numeral',async()=>{
+  const work={originalSubject:'無職転生Ⅲ〜異世界行ったら本気だす〜',subject:'무직 전생 III',startDate:'2026-07-06'};
+  const calls=[];
+  await withFetch(async url=>{
+    const q=new URL(url).searchParams.get('q'); calls.push(q);
+    return Response.json({results:q==='無職転生Ⅲ異世界行ったら本気だす'?[{anime_id:'mushoku-3',title:{native:work.originalSubject},season_year:2026}]:[]});
+  },async()=>{
+    const results=await searchReanimeCandidates(work,base,work.originalSubject);
+    assert.equal(results[0]?.id,'re_mushoku-3'); assert.equal(results[0]?.exactMatch,true);
+    assert.deepEqual(calls,[work.originalSubject,'無職転生Ⅲ異世界行ったら本気だす']);
+  });
+});
+test('successful original searches do not broaden or duplicate requests',async()=>{
+  const calls=[];
+  await withFetch(async url=>{calls.push(url);return Response.json({results:[{anime_id:'cat',title:{native:'ヤニねこ'}}]});},async()=>{
+    assert.equal((await searchReanimeCandidates(anime,base,'ヤニ〜ねこ')).length,1);
+    assert.equal(calls.length,1);
+  });
+});
+
 test('search preserves upstream status and rejects HTML challenge responses',async()=>{
   await withFetch(async()=>new Response('Forbidden',{status:403}),async()=>{
     await assert.rejects(searchReanimeCandidates(anime,base,'ヤニねこ'),e=>e.status===403 && /403/.test(e.message));

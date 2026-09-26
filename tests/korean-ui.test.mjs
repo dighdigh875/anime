@@ -60,6 +60,6 @@ test('video mounts after a ready response and receives the acquired subtitle',as
     assert.match(ui.container.textContent,/번역자/);
     await React.act(async()=>{window.dispatchEvent(new window.MessageEvent('message',{source:iframe.contentWindow,origin:'https://player.example',data:{currentTime:2,duration:30}}));await settle();});
     const hud=ui.container.querySelector('.font-black.text-white.text-center');
-    assert.equal(hud.innerText,'안녕하세요');
+    assert.equal(hud.textContent,'안녕하세요');
   } finally {await ui.cleanup();}
 });
