@@ -19,3 +19,13 @@ On 2026-09-26/27, Chrome loaded real Reanime search/detail/episode metadata afte
 The nested bridge is limited to the current iframe's descendants at `https://flixcloud.cc`; unknown origins are rejected. Third-party domain/protocol changes may require an update. No browser security settings are disabled.
 
 The full watch page retains its own controls. **Auto Next defaults on**, and changing episodes inside it bypasses this app's subtitle preparation and keeps the initially selected subtitle/history metadata. Turn Auto Next off and change episodes in this app. The parent cannot reliably inspect or prevent the cross-origin page's internal navigation. Fullscreen entered inside the source page can also exclude the Korean overlay; use the outer fullscreen control. This fallback verifies the episode selected in this app, not arbitrary later navigation inside Reanime.
+
+## Video-only mirror viewport
+
+Mirror mode starts with **영상만 보기**. It keeps the embedded page at a 960px layout width, below Reanime's sidebar breakpoint, and scales a 16:9 crop to the local player. The preset comes from the fetched watch-page HTML/CSS: 8px side padding and a video top of 106.5px. It is not a live measurement of the cross-origin document.
+
+- **원본 화면** exposes the source controls, including server selection and Auto Next. If you scroll that page, return it to the top before switching back to the cropped view.
+- **화면 조절** changes zoom and position; **화면 위치 초기화** restores the preset. Toggling and adjustment retain the existing iframe, URL and subtitle canvas.
+- After deployment, check an episode with an available subtitle at desktop and mobile widths, and check portrait/landscape fullscreen. Verify that the video's edges and controls remain visible and the Korean subtitle overlays the video. Third-party banners or layout changes may require adjustment.
+
+The viewport tests use JSDOM and simulated parent dimensions to check UI state and iframe preservation. They do not render Reanime or prove crop alignment, playback continuity, subtitle acquisition, or fullscreen appearance. Live visual verification of this viewport change is pending because the current browser tool cannot identify the browser URL and stops before screen inspection.
