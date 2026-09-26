@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getProviderByAnimeId } from "@/lib/providers";
+import { getAnimeDetail, getEpisodeStream } from "@/lib/linkkf";
 import { getSessionUser } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
@@ -18,8 +18,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: false, message: "Missing anime id" }, { status: 400 });
   }
 
-  const provider = getProviderByAnimeId(animeId);
-  const anime = await provider.getAnimeDetail(animeId);
+  const anime = await getAnimeDetail(animeId);
   if (!anime) {
     return NextResponse.json({ success: false, message: "Anime not found" }, { status: 404 });
   }
@@ -35,7 +34,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: false, message: "Watch URL not found" }, { status: 404 });
   }
 
-  const streamInfo = await provider.getEpisodeStream(watchUrl);
+  const streamInfo = await getEpisodeStream(watchUrl);
   const playerRef = streamInfo?.player_url || "";
   const rawM3u8 = streamInfo?.m3u8_url || "";
   const rawVtt = streamInfo?.vtt_url || "";

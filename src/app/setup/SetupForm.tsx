@@ -24,8 +24,8 @@ export default function SetupForm() {
       setError("마스터 비밀번호를 입력해주세요.");
       return;
     }
-    if (password.length < 4) {
-      setError("비밀번호는 최소 4자 이상이어야 합니다.");
+    if (password.length < 8) {
+      setError("비밀번호는 최소 8자 이상이어야 합니다.");
       return;
     }
     if (password !== confirmPassword) {
@@ -132,7 +132,7 @@ export default function SetupForm() {
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          placeholder="사용할 비밀번호 (4자 이상)"
+          placeholder="사용할 비밀번호 (8자 이상)"
           required
           autoComplete="new-password"
           className="w-full rounded-xl border border-white/10 bg-[#060913]/70 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 transition focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"

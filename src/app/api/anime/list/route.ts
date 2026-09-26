@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  getProvider,
+  getAnimeList,
+  getAnimeListFiltered,
+  searchAnime,
   LINKKF_GENRES,
   LINKKF_YEARS,
   LINKKF_TYPES,
-  REANIME_GENRES,
-} from "@/lib/providers";
-import { OHLI24_GENRES } from "@/lib/providers/ohli24";
+} from "@/lib/linkkf";
 import { getSessionUser } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
@@ -17,9 +17,6 @@ export async function GET(request: NextRequest) {
   }
 
   const { searchParams } = new URL(request.url);
-  const source = searchParams.get("source") || "linkkf";
-  const provider = getProvider(source);
-
   const q = searchParams.get("q")?.trim() || "";
   const tab = searchParams.get("tab") || "airing";
   const page = parseInt(searchParams.get("page") || "1", 10) || 1;
@@ -31,27 +28,14 @@ export async function GET(request: NextRequest) {
 
   let result;
   if (q) {
-    result = await provider.searchAnime(q, page);
-  } else if (source === "reanime") {
-    const category = (
-      tab === "airing"
-        ? "airing"
-        : tab === "top"
-        ? "top"
-        : tab === "upcoming"
-        ? "upcoming"
-        : tab === "finished"
-        ? "finished"
-        : "trending"
-    ) as "airing" | "top" | "upcoming" | "finished" | "trending";
-    result = await provider.getAnimeList({ category, page, genre });
+    result = await searchAnime(q, page);
   } else if (tab === "list") {
-    result = await provider.getAnimeListFiltered({ section, genre, year, typeLang, page });
+    result = await getAnimeListFiltered({ section, genre, year, typeLang, page });
   } else if (tab === "top") {
-    result = await provider.getAnimeList({ category: "top", page, period });
+    result = await getAnimeList({ category: "top", page, period });
   } else {
     // Default 'airing'
-    result = await provider.getAnimeListFiltered({ section: "2", page, category: "airing" });
+    result = await getAnimeListFiltered({ section: "2", page });
   }
 
   const noCache = searchParams.get("nocache") === "1";
@@ -60,17 +44,14 @@ export async function GET(request: NextRequest) {
       ? "no-store"
       : "public, s-maxage=300, stale-while-revalidate=600";
 
-  const isReanime = source === "reanime";
-  const isOhli24 = source === "ohli24";
   return NextResponse.json(
     {
       ...result,
-      source,
       tab,
       filters: {
-        genres: isReanime ? REANIME_GENRES : isOhli24 ? OHLI24_GENRES : LINKKF_GENRES,
-        years: isOhli24 || isReanime ? [] : LINKKF_YEARS,
-        types: isOhli24 || isReanime ? [] : LINKKF_TYPES,
+        genres: LINKKF_GENRES,
+        years: LINKKF_YEARS,
+        types: LINKKF_TYPES,
       },
     },
     {

@@ -41,8 +41,3 @@ next-env.d.ts
 /*.png
 
 *.sh
-
-# markdown files (except root README.md)
-*.md
-!/README.md
-!/readme.md

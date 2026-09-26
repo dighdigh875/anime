@@ -44,7 +44,7 @@ export default function AnimeCard({ anime }: { anime: AnimeListItem }) {
                 : "bg-black/75 text-purple-400 border border-purple-500/40 backdrop-blur-md"
             }`}
           >
-            {anime.rank > 30 ? `★ ${anime.rank}%` : `${anime.rank}위`}
+            {anime.rank}위
           </span>
         ) : anime.remarks ? (
           <span className="absolute top-2 right-2 rounded-lg bg-black/75 px-2 py-0.5 text-xs font-bold text-purple-400 border border-purple-500/40 backdrop-blur-md z-10">

@@ -31,10 +31,8 @@ export interface CreatorInfo {
 // 1. Title cleaner
 export function cleanTitle(text: string): string {
   if (!text) return "";
-  let t = text.replace(/\[.*?\]|\(.*?\)|【.*?】|<.*?>/g, " ");
-  t = t.replace(/\bBD\b/gi, " ");
-  t = t.replace(/\s+\d+화(?:\s|$)/g, " ");
-  t = t.replace(/[^\w\s가-힣a-zA-Z0-9~-]/g, " ");
+  let t = text.replace(/\[.*?\]|\(.*?\)|【.*?】|<.*?>|~.*?~/g, " ");
+  t = t.replace(/[^\w\s가-힣a-zA-Z0-9]/g, " ");
   return t.replace(/\s+/g, " ").trim();
 }
 
@@ -43,38 +41,15 @@ export function safeFilename(text: string): string {
   return text.replace(/[^a-zA-Z0-9가-힣_-]/g, "_").replace(/^_+|_+$/g, "");
 }
 
-// 3. Season parser (로마 숫자 I~VI, 유니코드 Ⅰ~Ⅵ, Part/파트, 기수 등 완벽 지원)
+// 3. Season parser
 export function parseSeason(text: string): number | null {
   if (!text) return null;
-
-  // 1) 유니코드 로마 숫자 (Ⅰ~Ⅹ)
-  if (/Ⅹ/i.test(text)) return 10;
-  if (/Ⅸ/i.test(text)) return 9;
-  if (/Ⅷ/i.test(text)) return 8;
-  if (/Ⅶ/i.test(text)) return 7;
-  if (/Ⅵ/i.test(text)) return 6;
-  if (/Ⅴ/i.test(text)) return 5;
-  if (/Ⅳ/i.test(text)) return 4;
-  if (/Ⅲ/i.test(text)) return 3;
-  if (/Ⅱ/i.test(text)) return 2;
-  if (/Ⅰ/i.test(text)) return 1;
-
-  // 2) 단어 단위 아스키 로마 숫자 (VI, IV, III, II)
-  if (/\bVI\b/i.test(text)) return 6;
-  if (/\bV\b/i.test(text)) return 5;
-  if (/\bIV\b/i.test(text)) return 4;
-  if (/\bIII\b/i.test(text)) return 3;
-  if (/\bII\b/i.test(text)) return 2;
-
-  // 3) 파트 / Part / 시즌 / 기
-  const m = text.match(/(\d+)\s*기|\b(\d+)(?:st|nd|rd|th)\b|season\s*(\d+)|\bs(\d+)\b|파트\s*(\d+)|part\s*(\d+)/i);
+  const m = text.match(/(\d+)\s*기|\b(\d+)(?:st|nd|rd|th)\b|season\s*(\d+)|\bs(\d+)\b/i);
   if (m) {
-    for (let i = 1; i <= 6; i++) {
+    for (let i = 1; i <= 4; i++) {
       if (m[i]) return parseInt(m[i], 10);
     }
   }
-
-  // 4) 한글/영문 바로 뒤 숫자 (예: 신의탑2)
   const m2 = text.match(/(?<=[가-힣a-zA-Z])([2-9])(?=\s|$|[^\w가-힣])/);
   if (m2) {
     return parseInt(m2[1], 10);
@@ -890,156 +865,7 @@ export async function fetchCreatorSubtitle(
   return null;
 }
 
-// 12-1. Generate smart search queries for Anissia (다단계 스마트 검색어 생성)
-export function generateAnissiaSearchQueries(rawTitle: string): string[] {
-  const queries = new Set<string>();
-  if (!rawTitle) return [];
-
-  let t = rawTitle;
-  // 1) 괄호류 태그 제거 ([BD], (더빙) 등)
-  t = t.replace(/\[.*?\]|\(.*?\)|【.*?】|<.*?>/g, " ");
-  // 2) 끝에 붙은 "1130화", "1화" 등 회차 제거
-  t = t.replace(/\s+\d+화(?:\s|$)/g, " ");
-  // 3) BD, Rip, 더빙, 자막 제거
-  t = t.replace(/\b(BD|Rip|더빙|자막)\b/gi, " ");
-
-  // 한글 부분 추출 (영문 부제 분리: 예 "뫼비우스 더스트 Mebius Dust" -> "뫼비우스 더스트")
-  let korOnly = "";
-  const matchKor = t.match(/[가-힣0-9\s~:-]+/g);
-  if (matchKor) {
-    korOnly = matchKor.join(" ").replace(/\s+/g, " ").trim();
-  }
-
-  // 시즌/기수 제거
-  const removeSeason = (str: string) => {
-    return str
-      .replace(/\s*\d+\s*기\b/g, "")
-      .replace(/season\s*\d+/gi, "")
-      .replace(/\b\d+(?:st|nd|rd|th)\b/gi, "")
-      .replace(/\s+[ⅠⅡⅢⅣⅤⅥII|III|IV|V|VI]\b/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
-  };
-
-  // 구분자(~, -, :, 「, 『) 앞의 대표명사 추출
-  const getMainBeforeSeparator = (str: string) => {
-    for (const sep of ["~", "-", ":", "「", "『"]) {
-      if (str.includes(sep) && !str.startsWith(sep)) {
-        return str.split(sep)[0].trim();
-      }
-    }
-    return "";
-  };
-
-  const addCandidates = (base: string) => {
-    if (!base) return;
-    const cleaned = base.replace(/[^\w\s가-힣a-zA-Z0-9]/g, " ").replace(/\s+/g, " ").trim();
-    if (cleaned.length >= 2) {
-      queries.add(cleaned);
-
-      // 띄어쓰기 변형 (공백 없는 4글자 이상 한글: 예 "무직전생" -> "무직 전생")
-      if (!cleaned.includes(" ") && cleaned.length >= 4) {
-        queries.add(cleaned.slice(0, 2) + " " + cleaned.slice(2));
-      }
-
-      // 첫 1~2단어 (불용어 제외)
-      const words = cleaned.split(/\s+/).filter((w) => !["시즌", "더빙", "자막", "극장판", "애니", "1기", "2기", "3기", "4기", "5기"].includes(w));
-      if (words.length >= 1 && words[0].length >= 2) {
-        queries.add(words[0]);
-      }
-      if (words.length >= 2) {
-        queries.add(`${words[0]} ${words[1]}`);
-      }
-    }
-  };
-
-  const mainSep = getMainBeforeSeparator(t);
-  if (mainSep) {
-    addCandidates(removeSeason(mainSep));
-    addCandidates(mainSep);
-  }
-
-  if (korOnly) {
-    addCandidates(removeSeason(korOnly));
-    addCandidates(korOnly);
-  }
-
-  const baseCleaned = removeSeason(t);
-  addCandidates(baseCleaned);
-  addCandidates(t);
-
-  return Array.from(queries).filter((q) => q.length >= 2);
-}
-
-// 12-2. Anime Match Scorer (가중치 기반 최적 작품 매칭기 - 오매칭 원천 차단)
-export function scoreAnimeMatch(
-  rawTitle: string,
-  targetSeason: number | null,
-  item: { animeNo: number; subject: string }
-): number {
-  const itemSubject = item.subject || "";
-  const itemSeason = parseSeason(itemSubject);
-
-  let score = 0;
-
-  // 1) 제목 완전 일치 또는 상호 포함 여부
-  const cleanRaw = rawTitle.replace(/[^\w가-힣0-9]/g, "").toLowerCase();
-  const cleanItem = itemSubject.replace(/[^\w가-힣0-9]/g, "").toLowerCase();
-
-  if (cleanRaw === cleanItem) {
-    score += 150;
-  } else if (cleanItem.includes(cleanRaw) || cleanRaw.includes(cleanItem)) {
-    score += 80;
-  }
-
-  // 2) 시즌 일치 점수
-  if (targetSeason === null) {
-    // 1기이거나 단편인 경우
-    if (itemSeason === null || itemSeason === 1) {
-      score += 40;
-    } else {
-      // 대상이 2기, 3기 등 후속작이면 큰 감점
-      score -= 60;
-    }
-  } else {
-    // 특정 시즌(2기 이상)인 경우
-    if (itemSeason === targetSeason) {
-      score += 60;
-    } else if (itemSeason === null) {
-      score -= 20;
-    } else {
-      // 시즌이 완전히 다른 경우 대폭 감점 (예: 2기 찾는데 5기)
-      score -= 100;
-    }
-  }
-
-  // 3) 극장판 / 외전 패널티
-  const isTargetMovie = /극장판|movie/i.test(rawTitle);
-  const isItemMovie = /극장판|movie/i.test(itemSubject);
-  if (isTargetMovie && isItemMovie) {
-    score += 40;
-  } else if (!isTargetMovie && isItemMovie) {
-    score -= 40; // TV 시리즈 찾는데 극장판이면 감점
-  }
-
-  const isTargetSpinOff = /외전|팬레터|스페셜|멍!/i.test(rawTitle);
-  const isItemSpinOff = /외전|팬레터|스페셜|멍!/i.test(itemSubject);
-  if (!isTargetSpinOff && isItemSpinOff) {
-    score -= 50; // 본편 찾는데 스핀오프면 감점
-  }
-
-  // 4) 단어 오버랩 점수
-  const rawWords = rawTitle.split(/\s+/).filter((w) => w.length >= 2);
-  let overlapWords = 0;
-  for (const w of rawWords) {
-    if (itemSubject.includes(w)) overlapWords++;
-  }
-  score += overlapWords * 15;
-
-  return score;
-}
-
-// 12-3. Anissia API query for subtitle creators with smart multi-stage search
+// 12. Anissia API query for subtitle creators
 export async function getAnissiaCreators(
   title: string,
   episodeNumber: number,
@@ -1047,71 +873,94 @@ export async function getAnissiaCreators(
 ): Promise<CreatorInfo[]> {
   const results: CreatorInfo[] = [];
   try {
-    const targetSeason = parseSeason(title);
-    const queries = generateAnissiaSearchQueries(title);
+    const cleanFull = cleanTitle(title);
+    const korPart = title.replace(/[a-zA-Z].*$/, "").trim();
+    const cleanKor = cleanTitle(korPart);
+    const query = cleanKor && cleanKor.length >= 2 ? cleanKor : cleanFull;
 
-    let bestAnime: { animeNo: number; subject: string } | null = null;
-    let bestScore = 0;
-
-    // 최대 4개의 스마트 쿼리를 순차/조기종료 방식으로 검색
-    for (const q of queries.slice(0, 4)) {
-      try {
-        const url = `https://api.anissia.net/anime/list/0?q=${encodeURIComponent(q)}`;
-        const res = await fetch(url, {
-          headers: HEADERS,
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-
-        if (!res.ok) continue;
-        const json = await res.json();
-        const content: Array<{ animeNo: number; subject: string }> = json?.data?.content || [];
-        if (content.length === 0) continue;
-
-        for (const item of content) {
-          const sc = scoreAnimeMatch(title, targetSeason, item);
-          if (sc > bestScore) {
-            bestScore = sc;
-            bestAnime = item;
-          }
-        }
-
-        // 높은 신뢰도(120점 이상)인 경우 추가 쿼리 검색 생략
-        if (bestScore >= 120) {
-          break;
-        }
-      } catch {}
-    }
-
-    // 신뢰도 점수가 50점 미만이면 오매칭(다른 작품 자막) 방지를 위해 제외
-    if (!bestAnime || bestScore < 50) {
-      return results;
-    }
-
-    const capUrl = `https://api.anissia.net/anime/caption/animeNo/${bestAnime.animeNo}`;
-    const capRes = await fetch(capUrl, {
+    const url = `https://api.anissia.net/anime/list/0?q=${encodeURIComponent(query)}`;
+    const res = await fetch(url, {
       headers: HEADERS,
       signal: AbortSignal.timeout(timeoutMs),
     });
 
-    if (capRes.ok) {
-      const capJson = await capRes.json();
-      const captions = capJson?.data || [];
-      const seenNames = new Set<string>();
+    let content: Array<{ animeNo: number; subject: string }> = [];
+    if (res.ok) {
+      const json = await res.json();
+      content = json?.data?.content || [];
+    }
 
-      for (const c of captions) {
-        const name = (c.name || "제작자").trim();
-        if (seenNames.has(name)) continue;
-        seenNames.add(name);
+    const targetSeason = parseSeason(title);
+    let matchedAnime: { animeNo: number; subject: string } | null = null;
 
-        const epStr = String(c.episode || "");
-        const isCurrent = epStr.includes(String(episodeNumber));
-        results.push({
-          name,
-          episode: epStr,
-          update_date: (c.updDt || "").replace("T", " ").slice(0, 16),
-          website: (c.website || "").trim(),
-          is_current_ep: isCurrent,
+    for (const item of content) {
+      const itemSeason = parseSeason(item.subject);
+      if (targetSeason === null && (itemSeason === null || itemSeason === 1)) {
+        matchedAnime = item;
+        break;
+      }
+      if (targetSeason !== null && itemSeason === targetSeason) {
+        matchedAnime = item;
+        break;
+      }
+    }
+    if (!matchedAnime && content.length > 0) {
+      matchedAnime = content[0];
+    }
+
+    // Fallback: 단어 분리 검색
+    if (!matchedAnime) {
+      const words = query
+        .split(/\s+/)
+        .filter((w) => !["시즌", "더빙", "자막", "극장판", "애니", "1기", "2기", "3기", "4기", "5기"].includes(w));
+      const fallbackQuery = words.length >= 2 ? words.slice(0, 2).join(" ") : words[0] || "";
+      if (fallbackQuery && fallbackQuery !== query) {
+        const url2 = `https://api.anissia.net/anime/list/0?q=${encodeURIComponent(fallbackQuery)}`;
+        const res2 = await fetch(url2, {
+          headers: HEADERS,
+          signal: AbortSignal.timeout(timeoutMs),
         });
+        if (res2.ok) {
+          const json2 = await res2.json();
+          const c2 = json2?.data?.content || [];
+          for (const item of c2) {
+            const subj = item.subject || "";
+            if (words.some((w) => w.length >= 2 && subj.includes(w))) {
+              matchedAnime = item;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (matchedAnime && matchedAnime.animeNo) {
+      const capUrl = `https://api.anissia.net/anime/caption/animeNo/${matchedAnime.animeNo}`;
+      const capRes = await fetch(capUrl, {
+        headers: HEADERS,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+      if (capRes.ok) {
+        const capJson = await capRes.json();
+        const captions = capJson?.data || [];
+        const seenNames = new Set<string>();
+
+        for (const c of captions) {
+          const name = (c.name || "제작자").trim();
+          if (seenNames.has(name)) continue;
+          seenNames.add(name);
+
+          const epStr = String(c.episode || "");
+          const isCurrent = epStr.includes(String(episodeNumber));
+          results.push({
+            name,
+            episode: epStr,
+            update_date: (c.updDt || "").replace("T", " ").slice(0, 16),
+            website: (c.website || "").trim(),
+            is_current_ep: isCurrent,
+          });
+        }
       }
     }
   } catch (e) {
