@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { EpisodeItem } from "./Player";
 import SubtitleSelectModal, { CreatorInfo, SubtitleOption } from "./SubtitleSelectModal";
+import {isPlaybackMessage, pollPlaybackTime} from "@/lib/iframe-playback";
 
 interface SubtitleCue {
   start: number;
@@ -44,6 +45,7 @@ interface IframePlayerProps {
   dubEpisodes?: EpisodeItem[];
   streamType?: "m3u8" | "iframe";
   embedUrl?: string;
+  allowNestedPlayback?: boolean;
   initialSubtitles?: SubtitleOption[];
   subtitleEpisodeNumber?: number;
   watchPageUrl?: string;
@@ -67,6 +69,7 @@ export default function IframePlayer({
   linkNextEp,
   subEpisodes = [],
   embedUrl = "",
+  allowNestedPlayback = false,
   initialSubtitles,
   subtitleEpisodeNumber = episodeNumber,
   watchPageUrl,
@@ -171,15 +174,17 @@ export default function IframePlayer({
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       const timeMatch = timeArrowPattern.exec(line);
-      if (timeMatch) {
+      if (timeMatch || !line) {
         if (currentStart !== null && currentEnd !== null && currentTexts.length > 0) {
           const text = currentTexts.join("\n").trim();
           if (text && currentEnd > currentStart) {
             list.push({ start: currentStart, end: currentEnd, text });
           }
         }
-        currentStart = toSec(timeMatch[1]);
-        currentEnd = toSec(timeMatch[2]);
+        // A blank line ends the cue. Its following identifier is metadata,
+        // not a line of dialogue from the preceding cue.
+        currentStart = timeMatch ? toSec(timeMatch[1]) : null;
+        currentEnd = timeMatch ? toSec(timeMatch[2]) : null;
         currentTexts = [];
       } else if (currentStart !== null && line && !line.includes("-->")) {
         currentTexts.push(line);
@@ -362,23 +367,23 @@ export default function IframePlayer({
 
   // 8. FlixCloud postMessage polling (100ms) & message listeners
   useEffect(() => {
+    let embedOrigin: string;
+    try { embedOrigin = new URL(embedUrl).origin; } catch { return; }
     const timer = setInterval(() => {
       if (iframeRef.current?.contentWindow) {
-        try {iframeRef.current.contentWindow.postMessage({ command: "getTime" }, new URL(embedUrl).origin);} catch {}
+        pollPlaybackTime(iframeRef.current.contentWindow, embedOrigin, allowNestedPlayback);
       }
     }, 100);
 
     const handleMessage = (event: MessageEvent) => {
-      if (event.source !== iframeRef.current?.contentWindow) return;
-      try {if (event.origin !== new URL(embedUrl).origin) return;} catch {return;}
-      if (!event.data) return;
+      const root = iframeRef.current?.contentWindow;
+      if (!root || !isPlaybackMessage(event, root, embedOrigin, allowNestedPlayback)) return;
 
       // Handle Fullscreen queries from iframe
       if (event.data.zenCommand === "getFullscreenState") {
-        event.source?.postMessage(
+        (event.source as Window).postMessage(
           { zenFullscreenState: !!document.fullscreenElement },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          "*" as any
+          event.origin
         );
       }
 
@@ -392,11 +397,11 @@ export default function IframePlayer({
       }
 
       // Handle currentTime updates from FlixCloud
-      if (typeof event.data.currentTime === "number" && Number.isFinite(event.data.currentTime)) {
+      if (typeof event.data.currentTime === "number" && Number.isFinite(event.data.currentTime) && event.data.currentTime >= 0) {
         const time = event.data.currentTime;
         setCurrentVideoTime(time);
 
-        if (typeof event.data.duration === "number") {
+        if (typeof event.data.duration === "number" && Number.isFinite(event.data.duration) && event.data.duration >= 0) {
           setVideoDuration(event.data.duration);
         }
 
@@ -460,7 +465,7 @@ export default function IframePlayer({
       window.removeEventListener("message", handleMessage);
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
     };
-  }, [animeId, animeTitle, animePoster, episodeNumber, initialEpTitle, isSubEnabled, cues, syncOffset, videoDuration, embedUrl, watchPageUrl]);
+  }, [animeId, animeTitle, animePoster, episodeNumber, initialEpTitle, isSubEnabled, cues, syncOffset, videoDuration, embedUrl, watchPageUrl, allowNestedPlayback]);
 
   useEffect(() => () => {if (syncDebounceTimer.current) clearTimeout(syncDebounceTimer.current);}, []);
 
@@ -596,6 +601,7 @@ export default function IframePlayer({
       </div>
 
       {/* Main Video Box with Subtitle HUD Overlay */}
+      {allowNestedPlayback && <p className="text-sm leading-6 text-slate-300">Reanime 원본 화면으로 재생 중입니다. 한글 자막을 유지하려면 전체화면은 아래 버튼을 사용하고, 회차 변경은 위의 ‘자막 회차’에서 해주세요. 원본 화면의 Auto Next는 꺼주세요.</p>}
       <div
         ref={containerRef}
         className={`relative aspect-video w-full overflow-hidden rounded-2xl border border-purple-500/30 bg-black shadow-2xl shadow-purple-950/40 ${

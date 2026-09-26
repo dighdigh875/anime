@@ -1,0 +1,21 @@
+# Playback checks
+
+`npm test` runs deterministic tests without external services. UI tests simulate server failures, browser metadata responses, DB state and subtitle responses. Bridge tests check exact origins, actual iframe descendants, detached players, and the absence of a cross-origin browser stream API request.
+
+`node --import ./tests/register.mjs tests/live-reanime.mjs` is an opt-in live check for Anissia 3440 / Chainsmoker Cat episode 12. It checks exact title/year matching, episode availability, real Korean subtitle validation, and then the stream URL. It runs in Node, so it does not test browser CORS or Vercel egress.
+
+## Deployment verification
+
+1. Search `ヤニねこ` on `/korean/3440`, select the TV season, save the mapping, and reload to check restoration.
+2. Choose episode 12 and prepare subtitles. No stream request or iframe should appear before successful subtitle validation.
+3. When the server returns `REANIME_UNAVAILABLE`, search/detail retry from the browser. Stream lookup instead restores the original Reanime watch-page iframe, because `/api/flix/...` does not permit browser CORS.
+4. In mirror mode, turn off Reanime's **Auto Next**, use a SUB server (HD-1 worked in the local check), and click Play if autoplay is blocked. Check that the app's subtitle clock follows the video and Korean dialogue appears.
+5. Use the app's outer fullscreen button to keep the Korean overlay visible. For another episode, use the app's **자막 회차** selector and prepare subtitles again.
+
+## Verified boundary and limitations
+
+On 2026-09-26/27, Chrome loaded real Reanime search/detail/episode metadata after simulated server failures. A temporary local page supplied subtitles previously fetched and validated by the actual server helper. With the stream server failure also simulated, the production client mounted the Reanime watch page, received real nested FlixCloud time replies, advanced from 06:30 to 06:39 and beyond, and displayed Korean dialogue. The temporary page and subtitle fixture are not committed. Authenticated deployment/DB and Vercel egress must still be checked after deployment.
+
+The nested bridge is limited to the current iframe's descendants at `https://flixcloud.cc`; unknown origins are rejected. Third-party domain/protocol changes may require an update. No browser security settings are disabled.
+
+The full watch page retains its own controls. **Auto Next defaults on**, and changing episodes inside it bypasses this app's subtitle preparation and keeps the initially selected subtitle/history metadata. Turn Auto Next off and change episodes in this app. The parent cannot reliably inspect or prevent the cross-origin page's internal navigation. Fullscreen entered inside the source page can also exclude the Korean overlay; use the outer fullscreen control. This fallback verifies the episode selected in this app, not arbitrary later navigation inside Reanime.
