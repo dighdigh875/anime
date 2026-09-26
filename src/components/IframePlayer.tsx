@@ -23,6 +23,7 @@ import {
 import { EpisodeItem } from "./Player";
 import SubtitleSelectModal, { CreatorInfo, SubtitleOption } from "./SubtitleSelectModal";
 import {isPlaybackMessage, pollPlaybackTime} from "@/lib/iframe-playback";
+import {ReanimeViewportControls, useReanimeViewport} from "./ReanimeViewport";
 
 interface SubtitleCue {
   start: number;
@@ -76,6 +77,8 @@ export default function IframePlayer({
   backUrl,
 }: IframePlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const videoSurfaceRef = useRef<HTMLDivElement>(null);
+  const mirrorViewport = useReanimeViewport(allowNestedPlayback, videoSurfaceRef);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hudTextRef = useRef<HTMLDivElement>(null);
@@ -601,19 +604,23 @@ export default function IframePlayer({
       </div>
 
       {/* Main Video Box with Subtitle HUD Overlay */}
-      {allowNestedPlayback && <p className="text-sm leading-6 text-slate-300">Reanime 원본 화면으로 재생 중입니다. 한글 자막을 유지하려면 전체화면은 아래 버튼을 사용하고, 회차 변경은 위의 ‘자막 회차’에서 해주세요. 원본 화면의 Auto Next는 꺼주세요.</p>}
+      <ReanimeViewportControls viewport={mirrorViewport}/>
       <div
         ref={containerRef}
-        className={`relative aspect-video w-full overflow-hidden rounded-2xl border border-purple-500/30 bg-black shadow-2xl shadow-purple-950/40 ${
+        className={`relative grid place-items-center aspect-video w-full overflow-hidden rounded-2xl border border-purple-500/30 bg-black shadow-2xl shadow-purple-950/40 ${
           isFullscreen ? "fixed inset-0 z-50 h-screen w-screen rounded-none border-none" : ""
         }`}
       >
+        <div ref={videoSurfaceRef} className="relative h-full w-full overflow-hidden"
+          style={allowNestedPlayback && mirrorViewport.cropped && isFullscreen ? {width: 'min(100%, calc(100dvh * 16 / 9))', height: 'auto', aspectRatio: '16 / 9'} : undefined}>
         {/* Layer 1: Sandboxed FlixCloud Iframe */}
         <iframe
           ref={iframeRef}
           src={embedUrl}
           title="Anime Player"
           className="absolute inset-0 h-full w-full border-0 z-0"
+          style={mirrorViewport.style}
+          scrolling={allowNestedPlayback && mirrorViewport.cropped ? 'no' : 'auto'}
           allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
           sandbox="allow-scripts allow-same-origin allow-fullscreen"
           allowFullScreen
@@ -646,6 +653,7 @@ export default function IframePlayer({
             {noticeMessage}
           </div>
         )}
+        </div>
       </div>
 
       {/* Layer 3: Subtitle Control Toolbar (플레이어 하단) */}
