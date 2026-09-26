@@ -164,7 +164,7 @@ export default function SourceSelectModal({
     }
     onClose();
     // 소스가 바뀔 때는 이전 소스의 탭/필터 파라미터 간섭을 방지하기 위해 홈 루트로 이동
-    window.location.href = "/";
+    window.location.href = selectedSource === 'reanime' ? '/?tab=trending' : '/?tab=airing';
   };
 
   return createPortal(

@@ -1,6 +1,31 @@
+import { convertToVtt } from './subtitle-format';
+export { convertToVtt } from './subtitle-format';
 import * as cheerio from "cheerio";
 import iconv from "iconv-lite";
 import AdmZip from "adm-zip";
+import { validateKoreanSubtitle, type SubtitleSearchResult } from './korean-playback';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { assertSafeProxyUrl } from './proxyGuard';
+
+const subtitleRequestContext = new AsyncLocalStorage<AbortSignal>();
+
+async function subtitleFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const deadline = subtitleRequestContext.getStore();
+  const signals = [init.signal, deadline].filter((s): s is AbortSignal => Boolean(s));
+  const signal = signals.length ? AbortSignal.any(signals) : AbortSignal.timeout(5000);
+  let target = url;
+  for (let redirects = 0; redirects < 5; redirects++) {
+    signal.throwIfAborted();
+    await assertSafeProxyUrl(target);
+    const response = await fetch(target, {...init, signal, redirect: 'manual'});
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get('location');
+    await response.body?.cancel();
+    if (!location) throw new Error('Missing redirect location');
+    target = new URL(location, target).href;
+  }
+  throw new Error('Too many subtitle redirects');
+}
 
 export const HEADERS: Record<string, string> = {
   "User-Agent":
@@ -85,51 +110,26 @@ export function parseSeason(text: string): number | null {
 // 4. Episode numbers parser
 export function parseEpisodes(text: string): number[] {
   if (!text) return [];
-  const base = text.split(/[\\/]/).pop() || text;
-  const eps = new Set<number>();
-
-  // Range patterns: 1-12, 1~12, 01~12화
-  const rangeRegex = /(?:^|[^\d])0*(\d{1,3})\s*(?:~|-|_|\.\.|to)\s*0*(\d{1,3})\s*(?:화|편|ep|e|#)?/gi;
-  let match: RegExpExecArray | null;
-  while ((match = rangeRegex.exec(base)) !== null) {
-    const s = parseInt(match[1], 10);
-    const e = parseInt(match[2], 10);
-    if (s >= 1 && s < e && e <= 150 && e - s <= 100) {
-      if (![720, 1080, 480].includes(s) && ![720, 1080, 480].includes(e)) {
-        for (let i = s; i <= e; i++) eps.add(i);
-      }
+  let base = text.split(/[\\/]/).pop() || text;
+  try {base = decodeURIComponent(base);} catch {}
+  base = base.replace(/\d+\s*기|season\s*\d+|\b\d+(?:st|nd|rd|th)\b/gi, ' ');
+  const episodes = new Set<number>();
+  // Prefer explicit episode markers; a season number is never an episode.
+  for (const m of base.matchAll(/(?:^|[^\d.])(\d{1,4}(?:\.\d)?)\s*(?:화|편)/g)) episodes.add(Number(m[1]));
+  for (const m of base.matchAll(/(?:\bs\d+)?(?:episode|ep|\be|(?<=\d)e|#)\s*0*(\d{1,4}(?:\.\d)?)(?!\d)/gi)) episodes.add(Number(m[1]));
+  base = base.replace(/\bs\d+\b/gi, ' ');
+  for (const m of base.matchAll(/(?:^|[^\d])(\d{1,4})\s*(?:~|-|_|\.\.|to)\s*(\d{1,4})(?!\d)/gi)) {
+    const start = Number(m[1]), end = Number(m[2]);
+    if (start >= 0 && end > start && end - start <= 2000 && end < 10000) {
+      for (let i=start;i<=end;i++) episodes.add(i);
     }
   }
-
-  // Explicit units: 01화, 1편, ep2, #3
-  const explicitRegex = /(?:^|[^\d])0*(\d{1,3})\s*(?:화|편|ep|e|#)/gi;
-  while ((match = explicitRegex.exec(base)) !== null) {
-    const val = parseInt(match[1], 10);
-    if (val >= 1 && val <= 200) eps.add(val);
+  if (episodes.size) return [...episodes].sort((a,b) => a-b);
+  for (const m of base.matchAll(/(?<![\p{L}\p{N}])(\d{1,4}(?:\.\d)?)(?![\p{L}\p{N}])/gu)) {
+    const n = Number(m[1]);
+    if (![360,480,720,1080,2160].includes(n) && !(n >= 1900 && n <= 2100)) episodes.add(n);
   }
-
-  // Fallback: standalone numbers after removing season tokens
-  if (eps.size === 0) {
-    let clean = base.replace(/\b\d+(?:st|nd|rd|th)\b/gi, " ");
-    clean = clean.replace(/\b\d+\s*기\b/g, " ");
-    clean = clean.replace(/season\s*\d+/gi, " ");
-    clean = clean.replace(/\bs\d+\b/gi, " ");
-    clean = clean.replace(/(?<=[가-힣a-zA-Z])\d(?=\s|$|\.|\-|_)/g, " ");
-
-    const numRegex = /(?:^|[^\d])0*(\d{1,3})(?:[^\d]|$)/g;
-    while ((match = numRegex.exec(clean)) !== null) {
-      const val = parseInt(match[1], 10);
-      if (
-        ![720, 1080, 480, 2020, 2021, 2022, 2023, 2024, 2025, 2026].includes(val) &&
-        val >= 1 &&
-        val <= 200
-      ) {
-        eps.add(val);
-      }
-    }
-  }
-
-  return Array.from(eps).sort((a, b) => a - b);
+  return [...episodes].sort((a,b) => a-b);
 }
 
 // 5. Decode text buffer with encoding fallback (UTF-8, UTF-16, CP949, EUC-KR)
@@ -150,7 +150,7 @@ export function decodeSubtitleBuffer(buf: Buffer): string {
 
   for (const enc of ["utf-8", "cp949", "euc-kr", "utf-16"]) {
     try {
-      const s = iconv.decode(buf, enc);
+      const s = enc === 'utf-8' ? new TextDecoder('utf-8', {fatal: true}).decode(buf) : iconv.decode(buf, enc);
       if (
         s.toLowerCase().includes("<sync") ||
         s.toLowerCase().includes("<sami") ||
@@ -164,63 +164,6 @@ export function decodeSubtitleBuffer(buf: Buffer): string {
 
   // Fallback UTF-8
   return buf.toString("utf-8");
-}
-
-function msToTime(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const remMs = ms % 1000;
-  const s = totalSec % 60;
-  const totalMin = Math.floor(totalSec / 60);
-  const m = totalMin % 60;
-  const h = Math.floor(totalMin / 60);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(remMs).padStart(3, "0")}`;
-}
-
-// 6. SMI/SRT to WebVTT converter
-export function convertToVtt(rawText: string, origExt: string): { content: string; ext: string } {
-  const lowerExt = origExt.toLowerCase();
-  if (lowerExt === ".ass" || lowerExt === ".ssa") {
-    return { content: rawText, ext: ".ass" };
-  }
-
-  const lowerText = rawText.toLowerCase();
-
-  // SAMI (.smi) Parser
-  if (lowerExt === ".smi" || lowerText.includes("<sync") || lowerText.includes("<sami")) {
-    const matches: Array<{ startMs: number; text: string }> = [];
-    const syncRegex = /<SYNC\s+Start=(\d+)>(?:<P[^>]*>)?([\s\S]*?)(?=<SYNC|\Z)/gi;
-    let m: RegExpExecArray | null;
-
-    while ((m = syncRegex.exec(rawText)) !== null) {
-      const startMs = parseInt(m[1], 10);
-      let clean = m[2].replace(/<br\s*\/?>/gi, "\n");
-      clean = clean.replace(/<(?!(\/)?(?:font|i|b|u)\b)[^>]+>/gi, "").trim();
-      clean = clean.replace(/&nbsp;/gi, " ").trim();
-      if (clean && clean.toLowerCase() !== "&nbsp;") {
-        matches.push({ startMs, text: clean });
-      }
-    }
-
-    if (matches.length > 0) {
-      const lines = ["WEBVTT", ""];
-      for (let i = 0; i < matches.length; i++) {
-        const item = matches[i];
-        const endMs = i + 1 < matches.length ? matches[i + 1].startMs : item.startMs + 3000;
-        lines.push(`${msToTime(item.startMs)} --> ${msToTime(endMs)}`);
-        lines.push(item.text);
-        lines.push("");
-      }
-      return { content: lines.join("\n"), ext: ".vtt" };
-    }
-  }
-
-  // SRT Parser
-  if (lowerExt === ".srt" || rawText.includes("-->")) {
-    const vtt = "WEBVTT\n\n" + rawText.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
-    return { content: vtt, ext: ".vtt" };
-  }
-
-  return { content: rawText, ext: origExt };
 }
 
 // 7. In-memory ZIP extractor & subtitle reader
@@ -290,12 +233,13 @@ export function extractSubtitleFromBuffer(
         candidates.sort((a, b) => a.priority - b.priority);
         matchedEntry = candidates[0].entry;
         matchedDecName = candidates[0].decName;
-      } else if (subEntries.length === 1) {
+      } else if (subEntries.length === 1 && parseEpisodes(subEntries[0].entryName).length === 0) {
         matchedEntry = subEntries[0];
         matchedDecName = matchedEntry.name;
       }
 
       if (matchedEntry) {
+        if (matchedEntry.header.size > 4_000_000) return null;
         const rawBuf = matchedEntry.getData();
         const rawText = decodeSubtitleBuffer(rawBuf);
         const origExt = "." + (matchedEntry.name.split(".").pop() || "").toLowerCase();
@@ -314,6 +258,12 @@ export function extractSubtitleFromBuffer(
       console.error("[Zip Extractor error]:", e);
     }
   } else {
+    let attachmentName = '';
+    try {attachmentName = decodeURIComponent(new URL(urlPath).pathname.split('/').pop() || '');} catch {}
+    if (/\.(?:ass|ssa|srt|smi|vtt)$/i.test(attachmentName)) {
+      const namedEpisodes = parseEpisodes(attachmentName);
+      if (namedEpisodes.length && !namedEpisodes.includes(episodeNumber)) return null;
+    }
     const rawText = decodeSubtitleBuffer(buffer);
     const textLower = rawText.slice(0, 500).toLowerCase();
 
@@ -331,7 +281,7 @@ export function extractSubtitleFromBuffer(
     const isSrt = /^\s*\d+\s*[\r\n]+\d{2}:\d{2}/.test(rawText.slice(0, 100)) || rawText.includes("-->");
 
     if (isAss || isSmi || isSrt) {
-      const origExt = isAss ? ".ass" : isSmi ? ".smi" : ".srt";
+      const origExt = isAss ? ".ass" : isSmi ? ".smi" : /^\uFEFF?WEBVTT\b/.test(rawText) ? ".vtt" : ".srt";
       const { content, ext } = convertToVtt(rawText, origExt);
       const isAssResult = ext === ".ass" || ext === ".ssa";
       let displayFn = urlPath.split("/").pop() || `subtitle${origExt}`;
@@ -376,7 +326,7 @@ export async function downloadFileWithTimeout(
 
     const directUrl = convertToDirectDownloadUrl(url);
 
-    let res = await fetch(directUrl, {
+    let res = await subtitleFetch(directUrl, {
       headers,
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -387,7 +337,7 @@ export async function downloadFileWithTimeout(
         /(?:drive\.google\.com\/(?:file\/d\/|open\?id=)|docs\.google\.com\/uc\?id=)([a-zA-Z0-9_-]{25,})/
       );
       if (driveMatch && driveMatch[1]) {
-        res = await fetch(
+        res = await subtitleFetch(
           `https://docs.google.com/uc?export=download&id=${driveMatch[1]}&confirm=t`,
           {
             headers,
@@ -450,7 +400,7 @@ export async function findKairanSubtitle(
 
     for (const q of queries) {
       const searchUrl = `https://kairan03.blogspot.com/search?q=${encodeURIComponent(q)}`;
-      const res = await fetch(searchUrl, {
+      const res = await subtitleFetch(searchUrl, {
         headers: HEADERS,
         signal: AbortSignal.timeout(timeoutMs),
       });
@@ -484,7 +434,7 @@ export async function findKairanSubtitle(
 
       if (matchedPostUrl) {
         // Download post page to find attachment link
-        const postRes = await fetch(matchedPostUrl, {
+        const postRes = await subtitleFetch(matchedPostUrl, {
           headers: HEADERS,
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -544,7 +494,7 @@ export async function findKairanSubtitle(
       }
     }
   } catch (e) {
-    console.error("[Kairan Subtitle] error:", e);
+    if (!subtitleRequestContext.getStore()?.aborted) console.error("[Kairan Subtitle] error:", e);
   }
   return null;
 }
@@ -582,7 +532,7 @@ export async function searchBlogForEpisode(
     if (domain.includes("blogspot.com")) {
       for (const q of queries) {
         const searchUrl = `https://${domain}/search?q=${encodeURIComponent(q)}`;
-        const res = await fetch(searchUrl, {
+        const res = await subtitleFetch(searchUrl, {
           headers: HEADERS,
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -617,7 +567,7 @@ export async function searchBlogForEpisode(
     else if (domain.includes("tistory.com")) {
       for (const q of queries) {
         const searchUrl = `https://${domain}/search/${encodeURIComponent(q)}`;
-        const res = await fetch(searchUrl, {
+        const res = await subtitleFetch(searchUrl, {
           headers: HEADERS,
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -655,7 +605,7 @@ export async function searchBlogForEpisode(
         const blogId = m[1];
         for (const q of queries.slice(0, 2)) {
           const searchUrl = `https://blog.naver.com/PostSearchList.naver?blogId=${blogId}&searchText=${encodeURIComponent(q)}`;
-          const res = await fetch(searchUrl, {
+          const res = await subtitleFetch(searchUrl, {
             headers: HEADERS,
             signal: AbortSignal.timeout(timeoutMs),
           });
@@ -722,7 +672,7 @@ export async function fetchCreatorSubtitle(
           reqHeaders["Referer"] = "https://blog.naver.com/";
         }
 
-        const res = await fetch(postUrl, {
+        const res = await subtitleFetch(postUrl, {
           headers: reqHeaders,
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -855,7 +805,7 @@ export async function fetchCreatorSubtitle(
     // 🌟 1단계: 초기 등록 링크(website) 자체가 해당 회차 글인지 먼저 확인 (jcore 방식)
     let isInitialUrlCurrentEp = false;
     try {
-      const initRes = await fetch(website, {
+      const initRes = await subtitleFetch(website, {
         headers: HEADERS,
         signal: AbortSignal.timeout(4000),
       });
@@ -864,7 +814,7 @@ export async function fetchCreatorSubtitle(
         const $init = cheerio.load(initHtml);
         const pageTitle = $init("title").text().trim() || "";
         const pSeason = parseSeason(`${pageTitle} ${website}`);
-        const pEps = parseEpisodes(`${pageTitle} ${website}`);
+        const pEps = parseEpisodes(pageTitle);
 
         const seasonOk = (targetSeason === null || pSeason === null || targetSeason === pSeason);
         if (seasonOk && pEps.includes(episodeNumber)) {
@@ -885,7 +835,7 @@ export async function fetchCreatorSubtitle(
       if (searchExtracted) return searchExtracted;
     }
   } catch (e) {
-    console.error(`[fetchCreatorSubtitle error] ${creatorName}:`, e);
+    if (!subtitleRequestContext.getStore()?.aborted) console.error(`[fetchCreatorSubtitle error] ${creatorName}:`, e);
   }
   return null;
 }
@@ -1057,7 +1007,7 @@ export async function getAnissiaCreators(
     for (const q of queries.slice(0, 4)) {
       try {
         const url = `https://api.anissia.net/anime/list/0?q=${encodeURIComponent(q)}`;
-        const res = await fetch(url, {
+        const res = await subtitleFetch(url, {
           headers: HEADERS,
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -1088,7 +1038,7 @@ export async function getAnissiaCreators(
     }
 
     const capUrl = `https://api.anissia.net/anime/caption/animeNo/${bestAnime.animeNo}`;
-    const capRes = await fetch(capUrl, {
+    const capRes = await subtitleFetch(capUrl, {
       headers: HEADERS,
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -1103,8 +1053,8 @@ export async function getAnissiaCreators(
         if (seenNames.has(name)) continue;
         seenNames.add(name);
 
-        const epStr = String(c.episode || "");
-        const isCurrent = epStr.includes(String(episodeNumber));
+        const epStr = String(c.episode ?? "");
+        const isCurrent = epStr.trim() !== '' && Number(epStr) === episodeNumber;
         results.push({
           name,
           episode: epStr,
@@ -1120,66 +1070,58 @@ export async function getAnissiaCreators(
   return results;
 }
 
-// 13. High-level parallel searcher with 13-Second Safety Guard
+export async function getAnissiaCreatorsById(animeNo: number, episodeNumber: number): Promise<CreatorInfo[]> {
+  const response = await subtitleFetch(`https://api.anissia.net/anime/caption/animeNo/${animeNo}`, {
+    headers: HEADERS, signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error('Caption lookup failed');
+  const json = await response.json();
+  const captions = json.data ?? json;
+  if (!Array.isArray(captions)) throw new Error('Invalid caption response');
+  return captions.map((c: any) => ({
+    name: String(c.name || '제작자'), episode: String(c.episode ?? ''),
+    update_date: String(c.updDt || '').replace('T', ' ').slice(0, 16),
+    website: String(c.website || '').trim(),
+    is_current_ep: String(c.episode ?? '').trim() !== '' && Number(c.episode) === episodeNumber,
+  }));
+}
+
+// Keep completed work on timeout, and cancel outstanding upstream requests.
 export async function searchAllSubtitlesParallel(
   title: string,
   episodeNumber: number,
-  maxTotalTimeMs = 13000
-): Promise<{ subtitles: SubtitleResult[]; creators: CreatorInfo[] }> {
-  // Create an overall timeout promise that resolves at 13 seconds
-  let timeoutHandle: NodeJS.Timeout;
-  const timeoutPromise = new Promise<null>((resolve) => {
-    timeoutHandle = setTimeout(() => resolve(null), maxTotalTimeMs);
+  maxTotalTimeMs = 13000,
+  animeNo?: number,
+): Promise<SubtitleSearchResult> {
+  const controller = new AbortController();
+  const subtitles: SubtitleResult[] = [];
+  let creators: CreatorInfo[] = [];
+  let lookupFailed = false;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<void>(resolve => {
+    timer = setTimeout(() => { timedOut = true; controller.abort(); resolve(); }, maxTotalTimeMs);
   });
-
-  const workerPromise = (async () => {
-    // 1. Fetch Anissia creators and Kairan search concurrently
-    const [anissiaCreators, kairanSub] = await Promise.all([
-      getAnissiaCreators(title, episodeNumber, 3500),
-      findKairanSubtitle(title, episodeNumber, 3500),
-    ]);
-
-    const collectedSubs: SubtitleResult[] = [];
-    if (kairanSub) {
-      collectedSubs.push(kairanSub);
-    }
-
-    // 2. Filter valid creators who have an active blog for this episode
-    const candidateCreators = anissiaCreators.filter(
-      (c) => c.website && c.website.startsWith("http")
-    );
-
-    // Limit to top 4 creators to avoid excessive concurrency
-    const topCreators = candidateCreators.slice(0, 4);
-
-    // 3. Parallel fetch creator subtitles with individual 3.5s timeouts
-    const creatorSubPromises = topCreators.map((c) =>
-      fetchCreatorSubtitle(c.name, c.website, title, episodeNumber, 3500)
-    );
-
-    const settled = await Promise.allSettled(creatorSubPromises);
-    for (const s of settled) {
-      if (s.status === "fulfilled" && s.value) {
-        collectedSubs.push(s.value);
-      }
-    }
-
-    return {
-      subtitles: collectedSubs,
-      creators: anissiaCreators,
-    };
-  })();
-
-  try {
-    const winner = await Promise.race([workerPromise, timeoutPromise]);
-    clearTimeout(timeoutHandle!);
-    if (winner) {
-      return winner;
-    }
-    // If timed out at 13s, return whatever is empty or basic fallback safely
-    return { subtitles: [], creators: [] };
-  } catch {
-    clearTimeout(timeoutHandle!);
-    return { subtitles: [], creators: [] };
-  }
+  const collect = (sub: SubtitleResult | null) => {
+    if (!controller.signal.aborted && sub && validateKoreanSubtitle(sub) && !subtitles.some(s => s.name === sub.name)) subtitles.push(sub);
+  };
+  const work = subtitleRequestContext.run(controller.signal, async () => {
+    // The title is already Korean in the Anissia-first flow. ID lookup avoids fuzzy rematching.
+    const creatorWork = (async () => {
+      try {
+        creators = animeNo ? await getAnissiaCreatorsById(animeNo, episodeNumber) : await getAnissiaCreators(title, episodeNumber);
+        const candidates = creators.filter(c => /^https?:\/\//.test(c.website))
+          .sort((a, b) => Number(b.is_current_ep) - Number(a.is_current_ep)).slice(0, 4);
+        await Promise.allSettled(candidates.map(async c => collect(await fetchCreatorSubtitle(c.name, c.website, title, episodeNumber, 4000))));
+      } catch { lookupFailed = true; }
+    })();
+    const fallbackWork = findKairanSubtitle(title, episodeNumber, 4000).then(collect);
+    await Promise.allSettled([creatorWork, fallbackWork]);
+  });
+  try { await Promise.race([work, deadline]); }
+  finally { clearTimeout(timer!); controller.abort(); }
+  return {
+    subtitles: [...subtitles], creators: [...creators],
+    status: subtitles.length ? 'ready' : timedOut ? 'timeout' : lookupFailed ? 'error' : 'not_found',
+  };
 }

@@ -85,7 +85,7 @@ export default function Navbar() {
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (keyword.trim()) {
-      router.push(`/?tab=search&q=${encodeURIComponent(keyword.trim())}`);
+      router.push(`/?tab=korean&q=${encodeURIComponent(keyword.trim())}`);
     }
   };
 

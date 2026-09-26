@@ -1,5 +1,6 @@
 import { getDb } from "./db";
 import { getProviderByAnimeId } from "./providers";
+import { nextKoreanHistoryUrl } from "./korean-playback";
 
 // 사용자별 10분 TTL 캐시로 잦은 외부 웹 크롤링 요청 방지
 const lastCheckMap: Record<string, number> = {};
@@ -100,6 +101,10 @@ export async function checkAndPromoteNewEpisodes(userId = "default"): Promise<bo
         // 현재 완주한 회차보다 큰 다음 회차가 올라왔는지 확인 (오름차순 기준 첫 번째 다음 화)
         const nextEp = epList.find((e) => e.number > currentEpNum);
         if (!nextEp) return false;
+        const koreanUrl = nextKoreanHistoryUrl(row.watch_url || '', currentEpNum, nextEp.number);
+        // Never promote a Korean entry to the legacy player if its numbering is unknown.
+        if (row.watch_url?.startsWith('/korean/') && !koreanUrl) return false;
+        const nextWatchUrl = koreanUrl || nextEp.watch_url;
 
         // 다음 회차가 새로 등록됨 -> watch_time=0.0, is_completed=false로 신규 레코드 삽입 (NEW 상태 승격)
         // 기존 진행도가 있는 기록은 초기화하지 않음 (진행도 0인 스텁만 갱신)
@@ -107,7 +112,7 @@ export async function checkAndPromoteNewEpisodes(userId = "default"): Promise<bo
           INSERT INTO anime_history (
             user_id, anime_id, anime_title, anime_poster, episode_number, episode_title, watch_url, watch_time, duration, is_completed, updated_at
           ) VALUES (
-            ${userId}, ${animeId}, ${row.anime_title || detail.title}, ${row.anime_poster || detail.poster}, ${nextEp.number}, ${nextEp.title}, ${nextEp.watch_url}, 0.0, 0.0, FALSE, CURRENT_TIMESTAMP
+            ${userId}, ${animeId}, ${row.anime_title || detail.title}, ${row.anime_poster || detail.poster}, ${nextEp.number}, ${nextEp.title}, ${nextWatchUrl}, 0.0, 0.0, FALSE, CURRENT_TIMESTAMP
           )
           ON CONFLICT (user_id, anime_id, episode_number)
           DO UPDATE SET

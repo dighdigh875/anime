@@ -1,4 +1,5 @@
 import Navbar from "@/components/Navbar";
+import AnissiaCatalog from '@/components/AnissiaCatalog';
 import AnimeCard from "@/components/AnimeCard";
 import HistoryList, { HistoryItem } from "@/components/HistoryList";
 import ReanimeFeedFallback from "@/components/ReanimeFeedFallback";
@@ -47,6 +48,11 @@ export default async function HomePage({
   // 인증 검사: 관리자 없으면 /setup 강제 이동, 미로그인이면 /login 강제 이동
   await requireAuth();
 
+  const params = await searchParams;
+  if (!params.tab || params.tab === 'korean') {
+    return <div className="min-h-screen bg-[#0b0f19] pb-16"><Navbar/><AnissiaCatalog key={params.q || ''} query={params.q || ''}/></div>;
+  }
+
   const cookieStore = await cookies();
   const rawSource = cookieStore.get("anime_source")?.value;
   const activeSource = (
@@ -54,7 +60,6 @@ export default async function HomePage({
   ) as "linkkf" | "ohli24" | "reanime";
   const provider = getProvider(activeSource);
 
-  const params = await searchParams;
   const defaultTab = activeSource === "reanime" ? "trending" : "airing";
   const tab = params.tab || (params.q ? "search" : defaultTab);
   const q = params.q?.trim() || "";

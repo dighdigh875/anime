@@ -2,27 +2,47 @@
 
 Next.js 15 App Router와 Vercel Serverless, Neon Postgres를 기반으로 구축된 고성능 애니메이션 웹 스트리밍 플레이어입니다.
 
+## 한국어 자막을 먼저 확인하는 재생 방식
+
+기본 화면은 **애니시아 한글 작품 선택 → 같은 작품·시즌의 Reanime 영상 연결 → 해당 회차 자막 파일 확인 → 영상과 함께 재생** 순서로 진행합니다.
+
+1. 편성표 또는 한글 제목 검색에서 작품을 선택합니다.
+2. `영상 찾기`를 누르고 후보의 원제·방영 연도·시즌을 확인해 연결합니다. 일치하는 후보를 먼저 표시하지만 자동 확정하지 않습니다.
+3. 회차 번호가 다르면 `회차 차이`를 지정합니다. 자막 1화가 영상 13화라면 `12`, 자막 단편 0이 영상 1화라면 `1`입니다. 연결은 로그인 계정별로 DB에 저장합니다.
+4. 회차를 골라 `자막 확인 후 재생`을 누릅니다. 실제 파일의 한국어 대사·시간 구간·회차 단서를 확인한 뒤 플레이어를 엽니다.
+5. 자동 수집에 실패하면 제작자 게시물을 확인하거나 `자막 직접 선택`으로 ASS/SSA/SRT/SMI/VTT 파일을 불러옵니다. 직접 선택하는 파일은 최대 2MB입니다.
+
+애니시아의 자막 등록 표시는 최신 제작자 게시물 정보이며, 원하는 회차 파일의 다운로드 성공을 뜻하지 않습니다. 블로그 구조·접근 제한·첨부파일 삭제에 따라 수집이 실패할 수 있습니다. 시간 초과와 파일 미확보를 구분하며, 일부 검색이 늦어져도 이미 확보한 자막은 유지합니다.
+
+파일 검증만으로 번역 내용이나 영상과의 시간 싱크를 보장할 수는 없습니다. 재생 중 싱크 조절 기능을 사용할 수 있으며, 영상 iframe 제공자가 재생 시간 메시지를 지원해야 외부 자막이 시간에 맞춰 표시됩니다.
+
+한글 재생 화면에서 남긴 시청 기록과 다음 회차 바로가기는 다시 자막 확인 화면으로 연결됩니다. `기존 영상 목록`이나 소스 선택 메뉴에서는 기존 Reanime/Linkkf/Ohli24 탐색 흐름을 사용할 수 있습니다.
+
+작품·제작자 정보 출처: [애니시아](https://anissia.net/).
+
 ---
 
 ## 🚀 Vercel 원클릭 배포 및 시작하기
 
-복잡한 터미널 명령어, 키 발급, DB 세팅 없이 **아래 버튼 클릭 몇 번으로 개인 스트리밍 사이트를 즉시 배포**할 수 있습니다.
+Vercel에 Next.js 앱을 배포하고 Neon Postgres를 연결해 사용합니다. 작품 연결·계정·시청 기록을 저장하려면 DB가 필요합니다.
 
 ### 1. 원클릭 배포 (Deploy to Vercel)
-아래 버튼이나 링크를 클릭하면 본인 깃허브 계정으로 저장소가 자동 복제(Fork)되며 Vercel 배포가 바로 진행됩니다:
+수정본을 계속 업데이트하려면 Vercel에서 GitHub 저장소 `dighdigh875/anime`을 Import하세요. Framework Preset은 Next.js, Root Directory는 저장소 루트입니다. 별도 복제 배포에는 아래 버튼을 사용할 수 있습니다.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/13tahlm1-netizen/anime)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/dighdigh875/anime)
 
 > 🔗 **원클릭 배포 주소**:  
-> [https://vercel.com/new/clone?repository-url=https://github.com/13tahlm1-netizen/anime](https://vercel.com/new/clone?repository-url=https://github.com/13tahlm1-netizen/anime)
+> [Vercel에서 수정본 배포하기](https://vercel.com/new/clone?repository-url=https://github.com/dighdigh875/anime)
 
-### 2. 데이터베이스 원클릭 자동 연동 (1초 컷)
+### 2. 데이터베이스 연결
 1. 배포 완료 후 Vercel 프로젝트 대시보드 상단의 **`Storage`** 탭을 클릭합니다.
 2. **`Create Database` ➔ `Neon (Postgres)`**을 선택하고 **`Continue`**를 누릅니다.
-3. **끝!** Vercel이 알아서 Neon DB를 생성하고 연결 환경 변수(`POSTGRES_URL`, `DATABASE_URL`)까지 프로젝트에 **자동 주입**합니다. (수동 입력 불필요)
+3. 연결 후 `DATABASE_URL` 또는 `POSTGRES_URL` 환경 변수가 배포 환경에 등록되어 있는지 확인하고 **재배포**합니다. 직접 만든 Neon DB의 연결 문자열을 환경 변수에 설정해도 됩니다.
+
+공식 안내: [Vercel GitHub 연결](https://vercel.com/docs/git/vercel-for-github), [Neon 연동](https://vercel.com/marketplace/neon/neon).
 
 ### 3. 세션 보안 키 (Zero-Config)
-- `AUTH_SECRET`을 별도로 발급받거나 입력할 필요가 없습니다. 연결된 데이터베이스의 고유 암호화 해시를 기반으로 256비트 보안 키가 **자동 안전 생성**됩니다.
+- `AUTH_SECRET`을 별도로 설정할 수 있습니다. 미설정 시 DB 연결 문자열에서 서명 키를 파생합니다. DB 접속 정보가 변경되면 기존 로그인 세션이 만료될 수 있습니다.
 
 ### 4. 테이블 자동 생성 및 초기 관리자 설정
 - 배포 완료 후 사이트에 접속하면 필요한 모든 DB 테이블(시청 기록, 즐겨찾기, 오디오 스킵, 유저 계정 등)이 **자동으로 생성**됩니다.
@@ -80,3 +100,22 @@ Next.js 15 App Router와 Vercel Serverless, Neon Postgres를 기반으로 구축
 # 선택: 외부 소스 미러 도메인 변경 시
 # LINKKF_BASE_URL=https://...
 ```
+
+## 개발 및 검증
+
+Node.js 22.13 이상을 사용하고 `.env.local`에 본인의 DB 연결 정보를 설정합니다.
+
+```sh
+npm ci
+npm run dev
+```
+
+```sh
+npm test
+npm run typecheck
+npm run build
+```
+
+테스트는 한국어 자막 검사, 작품 후보 정렬, 회차 선택, CP949/SMI/VTT/ZIP 처리, 시간 초과 시 부분 결과 보존, 시청 기록의 회차 이동, 자막 검증 전후 플레이어 표시 조건을 확인합니다. UI 테스트는 모의 네트워크 응답을 사용하며 실제 외부 영상 재생을 확인하는 테스트는 아닙니다.
+
+로컬과 Vercel의 외부 서비스 접근 조건은 다를 수 있습니다. 배포 후 작품 연결 저장, 회차 자막 다운로드, 영상 재생, 자막 싱크를 확인하세요. 모든 작품의 자막 확보를 보장하지 않습니다.

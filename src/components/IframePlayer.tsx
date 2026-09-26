@@ -44,6 +44,10 @@ interface IframePlayerProps {
   dubEpisodes?: EpisodeItem[];
   streamType?: "m3u8" | "iframe";
   embedUrl?: string;
+  initialSubtitles?: SubtitleOption[];
+  subtitleEpisodeNumber?: number;
+  watchPageUrl?: string;
+  backUrl?: string;
 }
 
 function formatTime(sec: number): string {
@@ -63,6 +67,10 @@ export default function IframePlayer({
   linkNextEp,
   subEpisodes = [],
   embedUrl = "",
+  initialSubtitles,
+  subtitleEpisodeNumber = episodeNumber,
+  watchPageUrl,
+  backUrl,
 }: IframePlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -89,6 +97,7 @@ export default function IframePlayer({
   const [firstDialogue, setFirstDialogue] = useState<SubtitleCue | null>(null);
   const [loadingSubs, setLoadingSubs] = useState(false);
   const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
+  const [assReady, setAssReady] = useState(false);
 
   const syncDebounceTimer = useRef<NodeJS.Timeout | null>(null);
   const lastHistorySaveTime = useRef(0);
@@ -191,7 +200,7 @@ export default function IframePlayer({
     async function loadSavedSync() {
       try {
         const res = await fetch(
-          `/api/anime/reanime-sync?anime_id=${encodeURIComponent(animeId)}&episode_number=${episodeNumber}`
+          `/api/anime/reanime-sync?animeId=${encodeURIComponent(animeId)}&ep=${episodeNumber}`
         );
         const data = await res.json();
         if (data.success && data.setting) {
@@ -216,17 +225,19 @@ export default function IframePlayer({
       syncDebounceTimer.current = setTimeout(async () => {
         try {
           const currentSub = subtitles[currentSubIndex];
-          await fetch("/api/anime/reanime-sync", {
+          const response = await fetch("/api/anime/reanime-sync", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              anime_id: animeId,
-              episode_number: episodeNumber,
-              sync_offset: offset,
-              subtitle_name: currentSub?.name || "",
-              subtitle_url: currentSub?.url || "",
+              animeId,
+              ep: episodeNumber,
+              syncOffset: offset,
+              subtitleName: currentSub?.name || "",
+              subtitleUrl: currentSub?.url || "",
             }),
           });
+          const result = await response.json();
+          if (!response.ok || !result.success) throw new Error('싱크 저장 실패');
           setIsSavedSync(true);
         } catch (err) {
           console.error("Failed to save sync offset to DB:", err);
@@ -238,12 +249,16 @@ export default function IframePlayer({
 
   // 5. Fetch Korean subtitles for this anime
   useEffect(() => {
+    if (initialSubtitles) {
+      setSubtitles(initialSubtitles); setCurrentSubIndex(0); setLoadingSubs(false);
+      return;
+    }
     let isCancelled = false;
     async function fetchSubs() {
       setLoadingSubs(true);
       try {
         const res = await fetch(
-          `/api/anime/subtitles?title=${encodeURIComponent(animeTitle)}&ep=${episodeNumber}`
+          `/api/anime/subtitles?title=${encodeURIComponent(animeTitle)}&ep=${subtitleEpisodeNumber}`
         );
         const data = await res.json();
         if (isCancelled) return;
@@ -264,26 +279,6 @@ export default function IframePlayer({
             setCurrentSubIndex(0);
             showNotice(`자막 로드 완료 (${list.length}개 발견)`);
           }
-        } else {
-          // Fallback: check if local demo subtitle exists
-          try {
-            const demoRes = await fetch("/kimetsu_01.json");
-            if (demoRes.ok) {
-              const demoCues: SubtitleCue[] = await demoRes.json();
-              if (demoCues.length > 0) {
-                setCues(demoCues);
-                setFirstDialogue(demoCues[0]);
-                setSubtitles([
-                  {
-                    name: "카이란 블로그 자막 (기본 연동)",
-                    format: "VTT",
-                    is_ass: false,
-                    content: "",
-                  },
-                ]);
-              }
-            }
-          } catch {}
         }
       } catch (err) {
         console.error("Error fetching subtitles:", err);
@@ -295,12 +290,13 @@ export default function IframePlayer({
     return () => {
       isCancelled = true;
     };
-  }, [animeTitle, episodeNumber, showNotice]);
+  }, [animeTitle, subtitleEpisodeNumber, initialSubtitles, showNotice]);
 
   // 6. When currentSub changes, parse cues or setup SubtitlesOctopus
   useEffect(() => {
     const sub = subtitles[currentSubIndex];
     if (!sub || !sub.content) return;
+    let subtitleBlobUrl: string | undefined;
 
     if (sub.is_ass) {
       const parsed = parseAssToCues(sub.content);
@@ -316,6 +312,7 @@ export default function IframePlayer({
           }
           const blob = new Blob([sub.content], { type: "text/plain;charset=utf-8" });
           const blobUrl = URL.createObjectURL(blob);
+          subtitleBlobUrl = blobUrl;
 
           octopusRef.current = new window.SubtitlesOctopus({
             canvas: canvasRef.current,
@@ -345,26 +342,35 @@ export default function IframePlayer({
         octopusRef.current = null;
       }
     }
-  }, [subtitles, currentSubIndex, parseAssToCues, parseVttToCues, syncOffset, showNotice]);
+    return () => {
+      if (octopusRef.current) {octopusRef.current.dispose(); octopusRef.current = null;}
+      if (subtitleBlobUrl) URL.revokeObjectURL(subtitleBlobUrl);
+    };
+  }, [subtitles, currentSubIndex, parseAssToCues, parseVttToCues, syncOffset, showNotice, assReady]);
 
   // 7. Load SubtitlesOctopus library script
   useEffect(() => {
-    if (typeof window === "undefined" || window.SubtitlesOctopus) return;
+    if (typeof window === "undefined") return;
+    if (window.SubtitlesOctopus) {setAssReady(true); return;}
     const script = document.createElement("script");
     script.src = "/libass/subtitles-octopus.js";
     script.async = true;
+    script.onload = () => setAssReady(true);
     document.body.appendChild(script);
+    return () => {script.onload = null; script.remove();};
   }, []);
 
   // 8. FlixCloud postMessage polling (100ms) & message listeners
   useEffect(() => {
     const timer = setInterval(() => {
       if (iframeRef.current?.contentWindow) {
-        iframeRef.current.contentWindow.postMessage({ command: "getTime" }, "*");
+        try {iframeRef.current.contentWindow.postMessage({ command: "getTime" }, new URL(embedUrl).origin);} catch {}
       }
     }, 100);
 
     const handleMessage = (event: MessageEvent) => {
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      try {if (event.origin !== new URL(embedUrl).origin) return;} catch {return;}
       if (!event.data) return;
 
       // Handle Fullscreen queries from iframe
@@ -386,7 +392,7 @@ export default function IframePlayer({
       }
 
       // Handle currentTime updates from FlixCloud
-      if (typeof event.data.currentTime === "number") {
+      if (typeof event.data.currentTime === "number" && Number.isFinite(event.data.currentTime)) {
         const time = event.data.currentTime;
         setCurrentVideoTime(time);
 
@@ -401,7 +407,7 @@ export default function IframePlayer({
 
         // Drive HTML HUD text if cues exist
         if (hudTextRef.current) {
-          if (!isSubEnabled || cues.length === 0) {
+          if (!isSubEnabled || cues.length === 0 || octopusRef.current) {
             hudTextRef.current.style.display = "none";
           } else {
             const effectiveTime = time + syncOffset;
@@ -429,7 +435,7 @@ export default function IframePlayer({
               anime_poster: animePoster || "",
               episode_number: episodeNumber,
               episode_title: initialEpTitle || `${episodeNumber}화`,
-              watch_url: `/watch/${animeId}/${episodeNumber}`,
+              watch_url: watchPageUrl || `/watch/${animeId}/${episodeNumber}`,
               watch_time: Math.floor(time),
               duration: Math.floor(dur),
               is_completed: dur > 0 && time / dur > 0.85,
@@ -453,13 +459,10 @@ export default function IframePlayer({
       clearInterval(timer);
       window.removeEventListener("message", handleMessage);
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
-      if (octopusRef.current) {
-        try {
-          octopusRef.current.dispose();
-        } catch {}
-      }
     };
-  }, [animeId, animeTitle, animePoster, episodeNumber, initialEpTitle, isSubEnabled, cues, syncOffset, videoDuration]);
+  }, [animeId, animeTitle, animePoster, episodeNumber, initialEpTitle, isSubEnabled, cues, syncOffset, videoDuration, embedUrl, watchPageUrl]);
+
+  useEffect(() => () => {if (syncDebounceTimer.current) clearTimeout(syncDebounceTimer.current);}, []);
 
   // Adjust Sync Offset
   const adjustSync = (delta: number) => {
@@ -532,7 +535,7 @@ export default function IframePlayer({
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-purple-500/20 bg-slate-900/60 p-4 backdrop-blur-md">
         <div className="flex items-center gap-3">
           <Link
-            href={`/anime/${animeId}`}
+            href={backUrl || `/anime/${animeId}`}
             className="flex items-center gap-1.5 rounded-xl bg-purple-600/20 px-3 py-1.5 text-xs font-semibold text-purple-300 transition hover:bg-purple-600 hover:text-white"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -614,6 +617,7 @@ export default function IframePlayer({
         <canvas
           ref={canvasRef}
           className="absolute inset-0 h-full w-full pointer-events-none z-10"
+          style={{visibility: isSubEnabled ? 'visible' : 'hidden'}}
         />
 
         {/* Layer 2b: Text / VTT Subtitle HUD Overlay */}
@@ -806,7 +810,7 @@ export default function IframePlayer({
         onClose={() => setIsModalOpen(false)}
         animeId={animeId}
         animeTitle={animeTitle}
-        episodeNumber={episodeNumber}
+        episodeNumber={subtitleEpisodeNumber}
         creators={creators}
         currentSubName={subtitles[currentSubIndex]?.name}
         onSelectSubtitle={handleSelectSubtitle}
