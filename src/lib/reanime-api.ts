@@ -34,8 +34,15 @@ export async function searchReanimeCandidates(
 ): Promise<ReanimeCandidate[]> {
   const terms = query ? [query] : Array.from(new Set([anime.originalSubject, anime.subject].filter(Boolean)));
   const batches = await Promise.all(terms.map(async term => {
-    const json = await request(baseUrl, `/api/v1/search?q=${encodeURIComponent(term)}`, signal);
+    let json = await request(baseUrl, `/api/v1/search?q=${encodeURIComponent(term)}`, signal);
     if (!Array.isArray(json?.results)) throw new ReanimeRequestError('Reanime 검색 응답을 읽지 못했습니다.');
+    // Reanime can return no matches for decorative punctuation in native titles.
+    // Preserve letters/numerals (including Ⅲ) and retry only an empty, valid response.
+    const simplified = term.replace(/[\p{P}\p{S}]/gu, '').replace(/\s+/g, ' ').trim();
+    if (!json.results.length && simplified && simplified !== term) {
+      json = await request(baseUrl, `/api/v1/search?q=${encodeURIComponent(simplified)}`, signal);
+      if (!Array.isArray(json?.results)) throw new ReanimeRequestError('Reanime 검색 응답을 읽지 못했습니다.');
+    }
     return json.results.filter((item: any) => item && /^[a-zA-Z0-9_-]{1,230}$/.test(item.anime_id)).map((item: any): ReanimeCandidate => ({
       id: `re_${item.anime_id}`, title: item.title?.english || item.title?.romaji || item.title?.native || '',
       nativeTitle: item.title?.native || '', romajiTitle: item.title?.romaji || '',
