@@ -1,5 +1,5 @@
 import { getDb } from "./db";
-import { getAnimeDetail } from "./linkkf";
+import { getAnimeDetail } from "./reanime";
 
 // 사용자별 10분 TTL 캐시로 잦은 외부 웹 크롤링 요청 방지
 const lastCheckMap: Record<string, number> = {};
@@ -87,6 +87,7 @@ export async function checkAndPromoteNewEpisodes(userId = "default"): Promise<bo
     const results = await Promise.allSettled(
       batch.map(async (row): Promise<boolean> => {
         const animeId = row.anime_id as string;
+        if (!animeId.startsWith("re_")) return false;
         const currentEpNum = Number(row.episode_number) || 0;
 
         // 남은 예산만큼만 대기 (단, 개별 호출도 최대 8초)

@@ -1,35 +1,11 @@
+import { normalizeReanimeUrl } from "@/lib/reanime-client";
+import { checkReanimeHealth } from "@/lib/reanime";
 import { NextRequest, NextResponse } from "next/server";
-import { getLinkkfBaseUrl, setLinkkfBaseUrl, DEFAULT_LINKKF_URL } from "@/lib/db";
+import { getReanimeBaseUrl, setReanimeBaseUrl, DEFAULT_REANIME_URL } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 import { assertSafeProxyUrl, UnsafeProxyUrlError } from "@/lib/proxyGuard";
 
 export const dynamic = "force-dynamic";
-
-// 헬스체크 함수 (3초 타임아웃)
-async function checkUrlHealth(url: string): Promise<{ ok: boolean; latencyMs: number; statusText?: string }> {
-  const start = Date.now();
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500);
-
-    const res = await fetch(url, {
-      method: "GET",
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      },
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    const latencyMs = Date.now() - start;
-    // 200~399 상태코드는 정상 연결로 간주
-    return { ok: res.status >= 200 && res.status < 400, latencyMs, statusText: `${res.status} ${res.statusText}` };
-  } catch (err: any) {
-    const latencyMs = Date.now() - start;
-    return { ok: false, latencyMs, statusText: err?.message || "Connection timeout or failed" };
-  }
-}
 
 export async function GET() {
   // 보안: 설정된 베이스 URL이 외부에 노출되지 않도록 로그인 요구
@@ -42,13 +18,13 @@ export async function GET() {
   }
 
   try {
-    const currentBaseUrl = await getLinkkfBaseUrl();
-    const health = await checkUrlHealth(currentBaseUrl);
+    const currentBaseUrl = await getReanimeBaseUrl();
+    const health = await checkReanimeHealth(currentBaseUrl);
 
     return NextResponse.json({
       success: true,
       baseUrl: currentBaseUrl,
-      defaultUrl: DEFAULT_LINKKF_URL,
+      defaultUrl: DEFAULT_REANIME_URL,
       isHealthy: health.ok,
       latencyMs: health.latencyMs,
       statusText: health.statusText,
@@ -81,7 +57,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const rawUrl = body.baseUrl?.trim();
+    const rawUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : "";
     const force = Boolean(body.force);
 
     if (!rawUrl) {
@@ -91,20 +67,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let formatted = rawUrl;
-    if (!formatted.startsWith("http://") && !formatted.startsWith("https://")) {
-      formatted = `https://${formatted}`;
-    }
-    formatted = formatted.replace(/\/+$/, "");
-
-    // 유효한 URL 형식 검증
-    try {
-      new URL(formatted);
-    } catch {
-      return NextResponse.json(
-        { success: false, message: "올바른 URL 형식이 아닙니다 (예: https://linkkf.tv)" },
-        { status: 400 }
-      );
+    let formatted: string;
+    try { formatted = normalizeReanimeUrl(rawUrl); }
+    catch {
+      return NextResponse.json({success:false,message:"Reanime HTTPS 도메인을 입력해주세요. 예: https://reanime.to"},{status:400});
     }
 
     // 보안: 내부/비공개 주소로의 SSRF 차단
@@ -121,20 +87,21 @@ export async function POST(request: NextRequest) {
     }
 
     // 연결성 테스트
-    const health = await checkUrlHealth(formatted);
+    const health = await checkReanimeHealth(formatted);
     if (!health.ok && !force) {
       return NextResponse.json(
         {
           success: false,
           needsConfirmation: true,
-          message: `입력하신 URL(${formatted})에 접속할 수 없습니다 (${health.statusText}). 그래도 강제로 저장하시겠습니까?`,
+          message: `서버에서 Reanime(${formatted}) 목록을 확인하지 못했습니다 (${health.statusText}). 저장 후 브라우저 재시도는 가능하지만 재생을 보장하지 않습니다. 그래도 저장하시겠습니까?`,
+          baseUrl: formatted,
           health,
         },
         { status: 422 }
       );
     }
 
-    const saved = await setLinkkfBaseUrl(formatted);
+    const saved = await setReanimeBaseUrl(formatted);
     if (!saved) {
       return NextResponse.json(
         { success: false, message: "데이터베이스 저장에 실패했습니다." },

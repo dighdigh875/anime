@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAnimeDetail, getEpisodeStream } from "@/lib/linkkf";
+import { getAnimeDetail, getEpisodeStream } from "@/lib/reanime";
 import { assertSafeProxyUrl, UnsafeProxyUrlError } from "@/lib/proxyGuard";
 import { getSessionUser } from "@/lib/auth";
 
@@ -90,9 +90,12 @@ export async function GET(request: NextRequest) {
         const epList = isDub && detail.dub_episodes && detail.dub_episodes.length > 0
           ? detail.dub_episodes
           : detail.sub_episodes;
-        const targetEp = epList.find((e) => e.number === ep) || epList[0];
+        const targetEp = epList.find((e) => e.number === ep);
         if (targetEp && targetEp.watch_url) {
           const streamInfo = await getEpisodeStream(targetEp.watch_url);
+          if (streamInfo?.stream_type === "iframe") {
+            return NextResponse.json({success:false,message:"임베드 영상은 HLS 구간 분석을 지원하지 않습니다."},{status:422});
+          }
           if (streamInfo && streamInfo.m3u8_url) {
             m3u8Url = streamInfo.m3u8_url;
           }

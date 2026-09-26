@@ -2,6 +2,17 @@
 
 Next.js 15 App Router와 Vercel Serverless, Neon Postgres를 기반으로 구축된 고성능 애니메이션 웹 스트리밍 플레이어입니다.
 
+현재 영상 공급자는 **Reanime 전용**입니다. 기본 도메인은 `https://reanime.to`이며, 상단 지구본에서 관리자가 변경할 수 있습니다. API 주소를 붙여 넣어도 도메인만 저장합니다.
+
+- 목록·검색·상세·회차는 Reanime API로 조회합니다. 서버 조회 실패 시 브라우저에서 재시도하며, 실패와 검색 결과 없음을 구분합니다. 최근 방영/인기/최근 등록은 Reanime 홈에 제공된 목록 범위입니다. 전체 작품은 제목 검색을 이용하세요.
+- 영상 임베드는 별도 플레이어에서 재생하고 한국어 자막 검색·로컬 파일 선택·싱크 조절을 제공합니다. `sub`는 원어 음성 판본을 뜻하며 **한국어 자막이 포함됐다는 뜻은 아닙니다**. 자막이 없으면 한국어 작품명으로 수동 검색하거나 파일을 선택하세요. 로컬 자막은 UTF-8/CP949의 ASS·SSA·SRT·SMI·VTT를 지원합니다.
+- 브라우저 재시도도 외부 사이트의 CORS/차단 정책에 따라 실패할 수 있습니다. 403을 정상 연결로 처리하지 않으며, 강제 저장은 차단을 해제하지 않습니다. 임베드 영상의 시간 동기화·이어보기는 영상 서버의 메시지 API 지원에 의존합니다. 기존 HLS의 자동 스킵·구간 분석 기능은 임베드 영상에는 적용되지 않습니다.
+- 기존 Linkkf 즐겨찾기·기록은 삭제하지 않습니다. 이전 공급자의 작품은 Reanime에서 다시 검색해 등록해야 합니다. 과거 Reanime의 `re_` 작품 ID는 유지합니다.
+- 설정은 `reanime_base_url` DB 키 → `REANIME_BASE_URL` 환경 변수 → 기본 도메인 순서로 적용합니다. 기존 `linkkf_base_url`/`LINKKF_BASE_URL`은 읽지 않습니다.
+- 첫 DB 초기화 때 자막 싱크 테이블을 생성하고, 기존 작품 ID 열을 `TEXT`로 확장합니다. 기존 행을 삭제하지 않으며 테이블 변경 권한이 필요합니다.
+
+개발 검증: Node.js 22.13 이상에서 `npm ci`, `npm test`, `npx tsc --noEmit`, `npm run build`를 실행합니다. 테스트는 외부 사이트와 DB를 모의 처리하므로, 실제 배포 후 로그인·작품 검색·회차 재생·자막·이어보기도 확인해야 합니다.
+
 ---
 
 ## 🚀 Vercel 원클릭 배포 및 시작하기
@@ -11,10 +22,10 @@ Next.js 15 App Router와 Vercel Serverless, Neon Postgres를 기반으로 구축
 ### 1. 원클릭 배포 (Deploy to Vercel)
 아래 버튼이나 링크를 클릭하면 본인 깃허브 계정으로 저장소가 자동 복제(Fork)되며 Vercel 배포가 바로 진행됩니다:
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/13tahlm1-netizen/anime)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/dkdlel123/anime)
 
 > 🔗 **원클릭 배포 주소**:  
-> [https://vercel.com/new/clone?repository-url=https://github.com/13tahlm1-netizen/anime](https://vercel.com/new/clone?repository-url=https://github.com/13tahlm1-netizen/anime)
+> [배포 시작](https://vercel.com/new/clone?repository-url=https://github.com/dkdlel123/anime)
 
 ### 2. 데이터베이스 원클릭 자동 연동 (1초 컷)
 1. 배포 완료 후 Vercel 프로젝트 대시보드 상단의 **`Storage`** 탭을 클릭합니다.
@@ -78,5 +89,5 @@ Next.js 15 App Router와 Vercel Serverless, Neon Postgres를 기반으로 구축
 
 ```env
 # 선택: 외부 소스 미러 도메인 변경 시
-# LINKKF_BASE_URL=https://...
+# REANIME_BASE_URL=https://reanime.to
 ```

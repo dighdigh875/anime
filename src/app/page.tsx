@@ -1,15 +1,10 @@
 import Navbar from "@/components/Navbar";
 import AnimeCard from "@/components/AnimeCard";
 import HistoryList, { HistoryItem } from "@/components/HistoryList";
-import {
-  getAnimeListFiltered,
-  getAnimeList,
-  searchAnime,
-  LINKKF_GENRES,
-  LINKKF_YEARS,
-  LINKKF_TYPES,
-  AnimeListItem,
-} from "@/lib/linkkf";
+import ReanimeFeed from "@/components/ReanimeFeed";
+import { getAnimeList } from "@/lib/reanime";
+import type { AnimeListItem, AnimeListResponse } from "@/lib/reanime-client";
+import { getReanimeBaseUrl } from "@/lib/db";
 import { getDb, initDb } from "@/lib/db";
 import { checkAndPromoteNewEpisodes } from "@/lib/historyPromotion";
 import { getCurrentUserId, requireAuth } from "@/lib/auth";
@@ -38,32 +33,16 @@ export default async function HomePage({
   const tab = params.tab || (params.q ? "search" : "airing");
   const q = params.q?.trim() || "";
   const page = parseInt(params.page || "1", 10) || 1;
-  const genre = params.genre || "";
-  const year = params.year || "";
-  const typeLang = params.type || "";
-  const period = params.period || "day";
-
   let items: AnimeListItem[] = [];
   let historyItems: HistoryItem[] = [];
-  let has_next = false;
-  let total_pages = 1;
 
-  if (q) {
-    const res = await searchAnime(q, page);
-    items = res.items;
-    has_next = res.has_next;
-    total_pages = res.total_pages;
-  } else if (tab === "top") {
-    const res = await getAnimeList({ category: "top", page: 1, period });
-    items = res.items;
-    has_next = res.has_next;
-    total_pages = res.total_pages;
-  } else if (tab === "list") {
-    const res = await getAnimeListFiltered({ section: "2", genre, year, typeLang, page });
-    items = res.items;
-    has_next = res.has_next;
-    total_pages = res.total_pages;
-  } else if (tab === "favorites") {
+  const baseUrl = await getReanimeBaseUrl();
+  let initialFeed: AnimeListResponse | null = null;
+  if (q || (tab !== "favorites" && tab !== "history")) {
+    try { initialFeed = await getAnimeList({q, tab, page}); } catch { /* Browser retry */ }
+  }
+
+  if (!q && tab === "favorites") {
     const sql = getDb();
     if (sql) {
       await initDb();
@@ -122,31 +101,8 @@ export default async function HomePage({
         console.error("Failed to fetch history:", e);
       }
     }
-  } else {
-    // Airing
-    const res = await getAnimeListFiltered({ section: "2", page });
-    items = res.items;
-    has_next = res.has_next;
-    total_pages = res.total_pages;
   }
 
-  const buildUrl = (newParams: Record<string, string | number>) => {
-    const p = new URLSearchParams();
-    if (tab) p.set("tab", tab);
-    if (q) p.set("q", q);
-    if (genre) p.set("genre", genre);
-    if (year) p.set("year", year);
-    if (typeLang) p.set("type", typeLang);
-    if (period) p.set("period", period);
-    p.set("page", String(page));
-
-    Object.entries(newParams).forEach(([k, v]) => {
-      if (v === "") p.delete(k);
-      else p.set(k, String(v));
-    });
-
-    return `/?${p.toString()}`;
-  };
 
   return (
     <div className="min-h-screen bg-[#0b0f19]">
@@ -177,7 +133,7 @@ export default async function HomePage({
               }`}
             >
               <Flame className="h-4 w-4" />
-              인기 순위
+              인기 작품
             </Link>
 
             <Link
@@ -189,7 +145,7 @@ export default async function HomePage({
               }`}
             >
               <Filter className="h-4 w-4" />
-              카테고리 탐색
+              최근 등록
             </Link>
 
             <Link
@@ -217,125 +173,14 @@ export default async function HomePage({
             </Link>
           </div>
 
-          {/* Top Ranking Period Switcher */}
-          {tab === "top" && (
-            <div className="flex items-center gap-1 rounded-lg bg-slate-900/80 p-1 text-xs border border-purple-500/20">
-              {(
-                [
-                  ["day", "일간"],
-                  ["week", "주간"],
-                  ["month", "월간"],
-                  ["all", "전체"],
-                ] as const
-              ).map(([key, label]) => (
-                <Link
-                  key={key}
-                  href={buildUrl({ period: key, page: 1 })}
-                  className={`rounded-md px-2.5 py-1 transition ${
-                    period === key ? "bg-purple-600 text-white font-bold" : "text-slate-400 hover:text-slate-200"
-                  }`}
-                >
-                  {label}
-                </Link>
-              ))}
-            </div>
-          )}
         </div>
 
-        {/* Category Filters (Only on 'list' tab) */}
-        {tab === "list" && (
-          <div className="mt-6 space-y-4 rounded-2xl border border-purple-500/20 bg-slate-900/50 p-5 backdrop-blur-sm">
-            {/* Types (TV / Movie / OVA) */}
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              <span className="font-bold text-purple-400 mr-2 min-w-[36px]">타입:</span>
-              <Link
-                href={buildUrl({ type: "", page: 1 })}
-                className={`rounded-lg px-2.5 py-1 transition ${
-                  !typeLang ? "bg-purple-600 text-white font-bold" : "text-slate-400 hover:bg-slate-800"
-                }`}
-              >
-                전체
-              </Link>
-              {LINKKF_TYPES.map(([tKey, tLabel]) => (
-                <Link
-                  key={tKey}
-                  href={buildUrl({ type: tKey, page: 1 })}
-                  className={`rounded-lg px-2.5 py-1 transition ${
-                    typeLang === tKey ? "bg-purple-600 text-white font-bold" : "text-slate-400 hover:bg-slate-800"
-                  }`}
-                >
-                  {tLabel}
-                </Link>
-              ))}
-            </div>
-
-            {/* Genres */}
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              <span className="font-bold text-purple-400 mr-2 min-w-[36px]">장르:</span>
-              <Link
-                href={buildUrl({ genre: "", page: 1 })}
-                className={`rounded-lg px-2.5 py-1 transition ${
-                  !genre ? "bg-purple-600 text-white font-bold" : "text-slate-400 hover:bg-slate-800"
-                }`}
-              >
-                전체
-              </Link>
-              {LINKKF_GENRES.map(([gKey, gLabel]) => (
-                <Link
-                  key={gKey}
-                  href={buildUrl({ genre: gKey, page: 1 })}
-                  className={`rounded-lg px-2.5 py-1 transition ${
-                    genre === gKey ? "bg-purple-600 text-white font-bold" : "text-slate-400 hover:bg-slate-800"
-                  }`}
-                >
-                  {gLabel}
-                </Link>
-              ))}
-            </div>
-
-            {/* Years (1990 ~ 현재 연도 전체) */}
-            <div className="flex items-start gap-1.5 text-xs">
-              <span className="font-bold text-purple-400 mr-2 min-w-[36px] pt-1">연도:</span>
-              <div className="flex flex-wrap items-center gap-1.5 max-h-28 overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-purple-500/30">
-                <Link
-                  href={buildUrl({ year: "", page: 1 })}
-                  className={`rounded-lg px-2.5 py-1 transition ${
-                    !year ? "bg-purple-600 text-white font-bold" : "text-slate-400 hover:bg-slate-800"
-                  }`}
-                >
-                  전체
-                </Link>
-                {LINKKF_YEARS.map((y) => (
-                  <Link
-                    key={y}
-                    href={buildUrl({ year: y, page: 1 })}
-                    className={`rounded-lg px-2.5 py-1 transition ${
-                      year === y ? "bg-purple-600 text-white font-bold" : "text-slate-400 hover:bg-slate-800"
-                    }`}
-                  >
-                    {y}
-                  </Link>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Search Header info */}
-        {q && (
-          <div className="mt-6">
-            <h2 className="text-xl font-bold text-white">
-              &quot;{q}&quot; 검색 결과 ({items.length}개)
-            </h2>
-          </div>
-        )}
-
         {/* History Tab vs General Grid */}
-        {tab === "history" ? (
+        {!q && tab === "history" ? (
           <div className="mt-6">
             <HistoryList initialItems={historyItems} />
           </div>
-        ) : (
+        ) : !q && tab === "favorites" ? (
           <>
             {/* Anime Grid */}
             <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
@@ -354,36 +199,8 @@ export default async function HomePage({
               </div>
             )}
           </>
-        )}
+        ) : <ReanimeFeed key={`${baseUrl}:${tab}:${q}:${page}`} baseUrl={baseUrl} params={{tab,q,page}} initialData={initialFeed} />}
 
-        {/* Pagination */}
-        {tab !== "top" && tab !== "favorites" && tab !== "history" && (
-          <div className="mt-10 flex items-center justify-center gap-2">
-            {page > 1 && (
-              <Link
-                href={buildUrl({ page: page - 1 })}
-                className="flex items-center gap-1 rounded-xl border border-purple-500/20 bg-slate-900/80 px-4 py-2 text-sm text-slate-300 transition hover:border-purple-500 hover:text-white"
-              >
-                <ChevronLeft className="h-4 w-4" />
-                이전
-              </Link>
-            )}
-
-            <span className="px-4 py-2 text-sm font-semibold text-purple-300">
-              {page} / {total_pages || 1} 페이지
-            </span>
-
-            {has_next && (
-              <Link
-                href={buildUrl({ page: page + 1 })}
-                className="flex items-center gap-1 rounded-xl border border-purple-500/20 bg-slate-900/80 px-4 py-2 text-sm text-slate-300 transition hover:border-purple-500 hover:text-white"
-              >
-                다음
-                <ChevronRight className="h-4 w-4" />
-              </Link>
-            )}
-          </div>
-        )}
       </main>
     </div>
   );
