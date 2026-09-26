@@ -21,9 +21,10 @@ async function mount(sub) {
   const old=globalThis.fetch;
   globalThis.fetch=async()=>Response.json({success:true,setting:null});
   const container=document.getElementById('root'), root=createRoot(container);
-  await React.act(async()=>root.render(React.createElement(IframePlayer,{animeId:'re_test',animeTitle:'테스트',episodeNumber:1,
-    embedUrl:'https://player.example/video',initialSubtitles:[sub]})));
-  return {container, async time(t){await React.act(async()=>window.dispatchEvent(new window.MessageEvent('message',{
+  const update=async sub=>React.act(async()=>root.render(React.createElement(IframePlayer,{animeId:'re_test',animeTitle:'테스트',episodeNumber:1,
+    embedUrl:'https://player.example/video',initialSubtitles:sub?[sub]:[]})));
+  await update(sub);
+  return {container, update, async time(t){await React.act(async()=>window.dispatchEvent(new window.MessageEvent('message',{
     origin:'https://player.example',source:container.querySelector('iframe').contentWindow,data:{currentTime:t,duration:1000}})));},
     async cleanup(){await React.act(async()=>root.unmount());globalThis.fetch=old;delete window.SubtitlesOctopus;}};
 }
@@ -65,4 +66,28 @@ test('ASS renderer receives display pixels at mount, resize, fullscreen and DPR 
   } finally {await ui.cleanup();}
   assert.equal(observers.length,0);
   window.dispatchEvent(new window.Event('resize'));
+});
+
+test('attaching and removing ASS after original playback retains the iframe and clears subtitle controls and canvas',async()=>{
+  let disposed=0;
+  window.SubtitlesOctopus=class {
+    constructor(options){this.canvas=options.canvas;}
+    resize(w,h){this.canvas.width=w;this.canvas.height=h;}
+    setCurrentTime(){} dispose(){disposed++;}
+  };
+  const ui=await mount(null);
+  try {
+    const iframe=ui.container.querySelector('iframe'),canvas=ui.container.querySelector('canvas');
+    assert.match(ui.container.textContent,/한글 자막 없음/);
+    await ui.update({name:'늦게 추가한 ASS',is_ass:true,format:'ASS',content:'[Events]\nDialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,한글 자막'});
+    assert.equal(ui.container.querySelector('iframe'),iframe);
+    assert.match(ui.container.textContent,/늦게 추가한 ASS|자막 ON/);
+    assert.equal(canvas.style.visibility,'visible');
+    await ui.update(null);
+    assert.equal(ui.container.querySelector('iframe'),iframe);
+    assert.equal(canvas.style.visibility,'hidden');
+    assert.doesNotMatch(ui.container.textContent,/자막 ON|싱크 미세조절|첫 대사/);
+    assert.equal(disposed,1);
+    assert.equal(observers.length,0);
+  } finally {await ui.cleanup();}
 });

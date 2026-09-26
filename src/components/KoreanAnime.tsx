@@ -20,7 +20,7 @@ async function jsonRequest(url: string, init?: RequestInit) {
 }
 
 const statusText: Record<string, string> = {
-  not_found: '이번 회차의 한국어 자막 파일을 확보하지 못했습니다. 자막 게시물을 확인하거나 직접 파일을 선택해 주세요.',
+  not_found: '이번 회차의 한국어 자막 파일을 확보하지 못했습니다. 한글 자막 없이 재생하거나 자막 파일을 직접 선택할 수 있습니다.',
   timeout: '자막 검색 시간이 초과되었습니다. 자막이 없는 것으로 확정된 것은 아닙니다. 다시 시도하거나 직접 선택해 주세요.',
   error: '자막 정보를 조회하지 못했습니다. 잠시 후 다시 시도해 주세요.',
   episode_missing: '연결된 영상에 이 회차가 없습니다. 작품·시즌과 회차 차이를 확인해 주세요.',
@@ -114,15 +114,26 @@ export default function KoreanAnime({animeNo, initialEpisode}: {animeNo: number;
     } catch (e: any) {if (!controller.signal.aborted) {setError(e.message); setNotice('');}}
     finally {if (token === generation.current) setBusy(false);}
   };
-  const prepare = async (manualSubtitle?: SubtitleOption) => {
+  const prepare = async (manualSubtitle?: SubtitleOption, withoutKorean = false) => {
     if (!mapping || !detail || loading || busy) return;
-    resetPlayback(); setBusy(true); setError(''); setModalOpen(false);
-    const token = generation.current;
+    // Keep the current iframe mounted while looking for subtitles for this episode.
+    activeRequest.current?.abort();
+    const token = ++generation.current;
+    setBusy(true); setError(''); setNotice(''); setModalOpen(false);
     const controller = new AbortController(); activeRequest.current = controller;
     try {
       if (detail.id !== mapping.reanimeId) throw new Error('영상 작품과 저장된 연결이 일치하지 않습니다. 다시 불러와 주세요.');
       const videoEpisode = episode + mapping.episodeOffset;
       if (!detail.sub_episodes.some(e => e.number === videoEpisode)) {setNotice(statusText.episode_missing); return;}
+      const existingStream = prepared?.videoEpisode === videoEpisode ? prepared.stream : undefined;
+      if (withoutKorean) {
+        const stream = existingStream || await loadKoreanReanimeStream(detail, videoEpisode, controller.signal);
+        if (token !== generation.current) return;
+        // An explicit empty list also prevents IframePlayer from auto-fetching subtitles.
+        setPrepared({status: 'ready', stream, videoEpisode, subtitles: []});
+        setNotice('한글 자막 없이 재생합니다. 원본 자막은 영상 플레이어에서 선택할 수 있으며, 제공되지 않는 회차는 자막 없이 재생됩니다.');
+        return;
+      }
       const data = await jsonRequest('/api/anissia/prepare', {method:'POST', signal:controller.signal, headers:{'Content-Type':'application/json'}, body:JSON.stringify({animeNo,episode,...mapping,manualSubtitle})});
       if (token !== generation.current) return;
       if (data.creators?.length) setCreators(data.creators);
@@ -132,11 +143,11 @@ export default function KoreanAnime({animeNo, initialEpisode}: {animeNo: number;
         }
         if (!data.subtitles?.some((s: any) => s.episode === episode && validateKoreanSubtitle(s))) throw new Error('한국어 자막 검증 결과를 확인하지 못했습니다.');
         setNotice('한국어 자막을 확인했습니다. 영상에 연결하는 중입니다…');
-        const stream = await loadKoreanReanimeStream(detail, videoEpisode, controller.signal);
+        const stream = existingStream || await loadKoreanReanimeStream(detail, videoEpisode, controller.signal);
         if (token !== generation.current) return;
         setPrepared({...data, status: 'ready', stream}); setNotice('한국어 자막 파일을 확인했습니다. 재생을 시작할 수 있습니다.');
       }
-      else if (data.status === 'ready') {setPrepared(data); setNotice('한국어 자막 파일을 확인했습니다. 재생을 시작할 수 있습니다.');}
+      else if (data.status === 'ready') {setPrepared({...data, stream: existingStream || data.stream}); setNotice('한국어 자막 파일을 확인했습니다. 재생을 시작할 수 있습니다.');}
       else setNotice(statusText[data.status] || '재생을 준비하지 못했습니다.');
     } catch (e: any) {if (!controller.signal.aborted) {setError(e.message); setNotice('');}}
     finally {if (token === generation.current) setBusy(false);}
@@ -170,9 +181,10 @@ export default function KoreanAnime({animeNo, initialEpisode}: {animeNo: number;
         </div>}
       </section>
       {mapping && detail && !showMapping && <section className="rounded-2xl border border-white/10 bg-slate-900/60 p-6">
-        <h2 className="font-bold text-white">3. 회차 자막 확인 후 재생</h2>
+        <h2 className="font-bold text-white">3. 회차 선택 및 재생</h2>
         <div className="mt-4 flex flex-wrap items-center gap-3"><label className="text-sm text-slate-300">자막 회차 <select aria-label="자막 회차" value={episode} disabled={busy || loading} onChange={e=>{resetPlayback();setEpisode(Number(e.target.value));}} className="ml-2 rounded-lg border border-white/15 bg-slate-950 px-3 py-2 text-white">{episodes.map(n=><option key={n} value={n}>{n === 0 ? '단편 (0)' : `${n}화`}</option>)}</select></label>
-          <button disabled={busy || loading || !episodes.includes(episode)} onClick={()=>void prepare()} className="flex items-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-40"><Play size={15}/>{busy ? '자막 파일 확인 중…' : '자막 확인 후 재생'}</button>
+          <button disabled={busy || loading || !episodes.includes(episode)} onClick={()=>void prepare()} className="flex items-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-40"><Play size={15}/>{busy ? '준비 중…' : prepared ? '한글 자막 다시 검색' : '자막 확인 후 재생'}</button>
+          {!prepared && <button disabled={busy || loading || !episodes.includes(episode)} onClick={()=>void prepare(undefined, true)} className="flex items-center gap-2 rounded-xl border border-white/15 bg-slate-800 px-4 py-2.5 text-sm font-bold text-slate-200 disabled:opacity-40"><Play size={15}/>한글 자막 없이 재생</button>}
           <button disabled={busy || loading} onClick={()=>setModalOpen(true)} className="flex items-center gap-2 text-sm text-purple-300"><Subtitles size={16}/> 자막 직접 선택</button>
         </div>
         {!episodes.length && <p className="mt-3 text-sm text-amber-300">연결된 작품에 선택할 수 있는 영상 회차가 없습니다.</p>}
@@ -181,7 +193,8 @@ export default function KoreanAnime({animeNo, initialEpisode}: {animeNo: number;
       {prepared && <IframePlayer key={`${animeNo}-${episode}-${prepared.videoEpisode}`} animeId={mapping!.reanimeId} animeTitle={anime.subject} animePoster={detail?.poster} episodeNumber={prepared.videoEpisode}
         initialEpTitle={episode === 0 ? '단편' : `${episode}화`} embedUrl={prepared.stream.embed_url || prepared.stream.player_url}
         allowNestedPlayback={prepared.stream.reanime_watch_page}
-        initialSubtitles={prepared.subtitles} subtitleEpisodeNumber={episode} watchPageUrl={`/korean/${animeNo}?ep=${episode}`} backUrl={`/?tab=korean`}/>}
+        subtitleSelectionDisabled={busy}
+        initialSubtitles={prepared.subtitles} initialCreators={creators} subtitleEpisodeNumber={episode} watchPageUrl={`/korean/${animeNo}?ep=${episode}`} backUrl={`/?tab=korean`}/>}
       <SubtitleSelectModal isOpen={modalOpen} onClose={()=>setModalOpen(false)} animeId={mapping?.reanimeId || ''} animeTitle={anime.subject} episodeNumber={episode} creators={creators} onSelectSubtitle={sub=>void prepare(sub)}/>
     </>}
   </main>;
