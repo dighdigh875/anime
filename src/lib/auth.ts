@@ -28,6 +28,7 @@ export interface AuthUser {
   username: string;
   nickname: string;
   isAdmin: boolean;
+  isFirstLogin?: boolean;
 }
 
 /**
@@ -72,6 +73,7 @@ export function createAuthToken(user: AuthUser, expiresInDays = 30): string {
     username: user.username,
     nickname: user.nickname,
     isAdmin: user.isAdmin,
+    isFirstLogin: Boolean(user.isFirstLogin),
     exp,
   });
   const payloadBase64 = Buffer.from(payload).toString("base64url");
@@ -114,6 +116,7 @@ export function verifyAuthToken(token: string): AuthUser | null {
       username: data.username,
       nickname: data.nickname,
       isAdmin: Boolean(data.isAdmin),
+      isFirstLogin: Boolean(data.isFirstLogin),
     };
   } catch {
     return null;
@@ -154,6 +157,9 @@ export async function getCurrentUserId(): Promise<string> {
 export async function requireAuth(): Promise<AuthUser> {
   const user = await getSessionUser();
   if (user) {
+    if (user.isFirstLogin) {
+      redirect("/profile?change_password=1");
+    }
     return user;
   }
 

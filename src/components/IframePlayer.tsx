@@ -20,8 +20,7 @@ import {
   Loader2,
   FolderOpen,
 } from "lucide-react";
-import type { EpisodeItem } from "@/lib/reanime-client";
-import { parseVttCues } from "@/lib/subtitle-file";
+import { EpisodeItem } from "./Player";
 import SubtitleSelectModal, { CreatorInfo, SubtitleOption } from "./SubtitleSelectModal";
 
 interface SubtitleCue {
@@ -72,7 +71,6 @@ export default function IframePlayer({
   subtitleEpisodeNumber = episodeNumber,
   watchPageUrl,
   backUrl,
-  isDub = false,
 }: IframePlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -103,20 +101,6 @@ export default function IframePlayer({
 
   const syncDebounceTimer = useRef<NodeJS.Timeout | null>(null);
   const lastHistorySaveTime = useRef(0);
-  const resumeTime = useRef<number | null>(null);
-  const historyReady = useRef(false);
-
-  useEffect(() => {
-    let active = true;
-    fetch(`/api/anime/history?anime_id=${encodeURIComponent(animeId)}`, {signal: AbortSignal.timeout(6000)})
-      .then(res => res.json()).then(data => {
-        if (!active) return;
-        const item = data.items?.find((entry: any) => Number(entry.episode_number) === episodeNumber);
-        const saved = Number(item?.watch_time || 0);
-        if (item && !item.is_completed && Number.isFinite(saved) && saved > 10) resumeTime.current = saved;
-      }).catch(() => {}).finally(() => {if (active) historyReady.current = true;});
-    return () => {active = false;};
-  }, [animeId, episodeNumber]);
 
   // Show temporary toast notice
   const showNotice = useCallback((msg: string, duration = 3000) => {
@@ -160,7 +144,56 @@ export default function IframePlayer({
     return list;
   }, []);
 
-  const parseVttToCues = parseVttCues;
+  // 2. VTT Parser
+  const parseVttToCues = useCallback((vttText: string): SubtitleCue[] => {
+    if (!vttText) return [];
+    const list: SubtitleCue[] = [];
+    const lines = vttText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+    let currentStart: number | null = null;
+    let currentEnd: number | null = null;
+    let currentTexts: string[] = [];
+
+    const toSec = (tStr: string) => {
+      if (!tStr) return 0;
+      const cleanStr = tStr.replace(",", ".").trim();
+      const p = cleanStr.split(":");
+      if (p.length === 3) {
+        return parseFloat(p[0]) * 3600 + parseFloat(p[1]) * 60 + parseFloat(p[2]);
+      } else if (p.length === 2) {
+        return parseFloat(p[0]) * 60 + parseFloat(p[1]);
+      }
+      return parseFloat(cleanStr) || 0;
+    };
+
+    const timeArrowPattern =
+      /((?:\d{1,2}:)?\d{2}:\d{2}[\.,]\d{1,3})\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}[\.,]\d{1,3})/;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      const timeMatch = timeArrowPattern.exec(line);
+      if (timeMatch) {
+        if (currentStart !== null && currentEnd !== null && currentTexts.length > 0) {
+          const text = currentTexts.join("\n").trim();
+          if (text && currentEnd > currentStart) {
+            list.push({ start: currentStart, end: currentEnd, text });
+          }
+        }
+        currentStart = toSec(timeMatch[1]);
+        currentEnd = toSec(timeMatch[2]);
+        currentTexts = [];
+      } else if (currentStart !== null && line && !line.includes("-->")) {
+        currentTexts.push(line);
+      }
+    }
+
+    if (currentStart !== null && currentEnd !== null && currentTexts.length > 0) {
+      const text = currentTexts.join("\n").trim();
+      if (text && currentEnd > currentStart) {
+        list.push({ start: currentStart, end: currentEnd, text });
+      }
+    }
+    return list;
+  }, []);
 
   // 3. Load saved sync setting from DB
   useEffect(() => {
@@ -361,20 +394,10 @@ export default function IframePlayer({
       // Handle currentTime updates from FlixCloud
       if (typeof event.data.currentTime === "number" && Number.isFinite(event.data.currentTime)) {
         const time = event.data.currentTime;
-        if (time < 0) return;
-        const duration = Number(event.data.duration);
-        if (historyReady.current && resumeTime.current !== null && Number.isFinite(duration) && duration > 0) {
-          const target = resumeTime.current;
-          resumeTime.current = null;
-          if (target < duration - 15 && target / duration < 0.95 && time < 10) {
-            iframeRef.current?.contentWindow?.postMessage({command: "seek", value: target}, new URL(embedUrl).origin);
-            return; // Do not overwrite the saved position with the pre-seek time.
-          }
-        }
         setCurrentVideoTime(time);
 
-        if (Number.isFinite(duration) && duration > 0) {
-          setVideoDuration(duration);
+        if (typeof event.data.duration === "number") {
+          setVideoDuration(event.data.duration);
         }
 
         // Drive SubtitlesOctopus if ASS
@@ -400,27 +423,24 @@ export default function IframePlayer({
 
         // Save history every 10 seconds
         const now = Date.now();
-        if (historyReady.current && now - lastHistorySaveTime.current > 10000 && time > 2) {
+        if (now - lastHistorySaveTime.current > 10000 && time > 2) {
           lastHistorySaveTime.current = now;
           const dur = event.data.duration || videoDuration;
           fetch("/api/anime/history", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              animeId,
-              animeTitle,
-              animePoster: animePoster || "",
-              episodeNumber,
-              episodeTitle: initialEpTitle || `${episodeNumber}화`,
-              watchUrl: watchPageUrl || `/watch/${animeId}/${episodeNumber}`,
-              currentTime: Math.floor(time),
+              anime_id: animeId,
+              anime_title: animeTitle,
+              anime_poster: animePoster || "",
+              episode_number: episodeNumber,
+              episode_title: initialEpTitle || `${episodeNumber}화`,
+              watch_url: watchPageUrl || `/watch/${animeId}/${episodeNumber}`,
+              watch_time: Math.floor(time),
               duration: Math.floor(dur),
-              isCompleted: dur > 0 && (time >= dur - 15 || time / dur >= 0.95),
+              is_completed: dur > 0 && time / dur > 0.85,
             }),
-          }).then(async response => {
-            const result = await response.json();
-            if (!response.ok || !result.success) throw new Error("시청 기록 저장 실패");
-          }).catch(() => {showNotice("시청 기록을 저장하지 못했습니다.");});
+          }).catch(() => {});
         }
       }
     };
@@ -524,7 +544,7 @@ export default function IframePlayer({
           <div>
             <h1 className="text-base font-bold text-white line-clamp-1">{animeTitle}</h1>
             <p className="text-xs text-purple-400">
-              {initialEpTitle || `${episodeNumber}화`} • Reanime
+              {initialEpTitle || `${episodeNumber}화`} • ReAnime 1080p
             </p>
           </div>
         </div>
@@ -533,7 +553,7 @@ export default function IframePlayer({
         <div className="flex items-center gap-2">
           {linkPreEp && (
             <Link
-              href={`/watch/${animeId}/${linkPreEp}${isDub ? "?dub=1" : ""}`}
+              href={`/watch/${animeId}/${linkPreEp}`}
               className="flex items-center gap-1 rounded-xl border border-white/10 bg-slate-800/80 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-purple-500 hover:text-white"
             >
               <ChevronLeft className="h-4 w-4" />
@@ -548,7 +568,7 @@ export default function IframePlayer({
                 onChange={(e) => {
                   const targetEp = e.target.value;
                   if (targetEp) {
-                    window.location.href = `/watch/${animeId}/${targetEp}${isDub ? "?dub=1" : ""}`;
+                    window.location.href = `/watch/${animeId}/${targetEp}`;
                   }
                 }}
                 className="appearance-none rounded-xl border border-purple-500/30 bg-slate-800/90 py-1.5 pl-3 pr-8 text-xs font-bold text-purple-200 outline-none transition focus:border-purple-400 cursor-pointer"
@@ -565,7 +585,7 @@ export default function IframePlayer({
 
           {linkNextEp && (
             <Link
-              href={`/watch/${animeId}/${linkNextEp}${isDub ? "?dub=1" : ""}`}
+              href={`/watch/${animeId}/${linkNextEp}`}
               className="flex items-center gap-1 rounded-xl bg-purple-600 px-3 py-1.5 text-xs font-semibold text-white shadow-lg shadow-purple-600/30 transition hover:bg-purple-500"
             >
               다음화
@@ -589,7 +609,7 @@ export default function IframePlayer({
           title="Anime Player"
           className="absolute inset-0 h-full w-full border-0 z-0"
           allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-          sandbox="allow-scripts allow-same-origin"
+          sandbox="allow-scripts allow-same-origin allow-fullscreen"
           allowFullScreen
         />
 
@@ -629,7 +649,7 @@ export default function IframePlayer({
           <div className="flex flex-wrap items-center gap-2">
             <span className="flex items-center gap-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-1 text-xs font-bold text-emerald-400">
               <Subtitles className="h-3.5 w-3.5" />
-              {subtitles[currentSubIndex]?.name || (loadingSubs ? "자막 검색 중..." : "자막 없음 · 직접 검색/파일 선택")}
+              {subtitles[currentSubIndex]?.name || "자막 연동 중..."}
             </span>
 
             <button

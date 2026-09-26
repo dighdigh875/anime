@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAnimeDetail, getEpisodeStream } from "@/lib/reanime";
+import { getAnimeDetail, getEpisodeStream } from "@/lib/linkkf";
 import { assertSafeProxyUrl, UnsafeProxyUrlError } from "@/lib/proxyGuard";
 import { getSessionUser } from "@/lib/auth";
 
@@ -17,11 +17,12 @@ interface SegmentItem {
 async function fetchM3u8(url: string, refUrl = "https://playv2.sub3.top/"): Promise<{ content: string; finalUrl: string }> {
   // 재귀적으로 따라가는 각 m3u8 URL도 SSRF 가드 통과 필수
   await assertSafeProxyUrl(url);
+  const actualRef = (url.includes("michealcdn") || url.includes("whycdn")) ? "https://michealcdn.com/" : refUrl;
   const res = await fetch(url, {
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      Referer: refUrl,
+      Referer: actualRef,
     },
   });
   if (!res.ok) {
@@ -85,17 +86,16 @@ export async function GET(request: NextRequest) {
   try {
     // anime_id와 ep가 제공된 경우 회차 스트림 m3u8을 자동으로 찾기
     if (!m3u8Url && animeId) {
-      const detail = await getAnimeDetail(animeId);
+      const { getProviderByAnimeId } = await import("@/lib/providers");
+      const provider = getProviderByAnimeId(animeId);
+      const detail = await provider.getAnimeDetail(animeId);
       if (detail) {
         const epList = isDub && detail.dub_episodes && detail.dub_episodes.length > 0
           ? detail.dub_episodes
           : detail.sub_episodes;
-        const targetEp = epList.find((e) => e.number === ep);
+        const targetEp = epList.find((e) => e.number === ep) || epList[0];
         if (targetEp && targetEp.watch_url) {
-          const streamInfo = await getEpisodeStream(targetEp.watch_url);
-          if (streamInfo?.stream_type === "iframe") {
-            return NextResponse.json({success:false,message:"임베드 영상은 HLS 구간 분석을 지원하지 않습니다."},{status:422});
-          }
+          const streamInfo = await provider.getEpisodeStream(targetEp.watch_url);
           if (streamInfo && streamInfo.m3u8_url) {
             m3u8Url = streamInfo.m3u8_url;
           }
@@ -114,6 +114,10 @@ export async function GET(request: NextRequest) {
     if (m3u8Url.includes("/api/anime/stream/m3u8?url=")) {
       const u = new URL(m3u8Url, "http://localhost");
       m3u8Url = decodeURIComponent(u.searchParams.get("url") || m3u8Url);
+    }
+
+    if (m3u8Url.includes("michealcdn.com") && m3u8Url.includes("master.m3u8")) {
+      m3u8Url = m3u8Url.replace(/master\.m3u8(\?.*)?$/, "master.txt");
     }
 
     try {

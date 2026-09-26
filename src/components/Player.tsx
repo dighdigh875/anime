@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
 import {
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   List,
@@ -33,6 +33,8 @@ import PlayerSettingsModal, {
   saveUserSettingsToDb,
   DEFAULT_PLAYER_SETTINGS,
 } from "./PlayerSettingsModal";
+import IframePlayer from "./IframePlayer";
+import { isReanimeId } from "@/lib/providers";
 
 export interface EpisodeItem {
   number: number;
@@ -97,11 +99,12 @@ interface SkipInterval {
   end: number;
 }
 
-interface PlayerProps {
+export interface PlayerProps {
   animeId: string;
   animeTitle: string;
   animePoster?: string;
   episodeNumber: number;
+  initialEpTitle?: string;
   m3u8Url: string;
   defaultVttUrl?: string;
   linkPre?: string;
@@ -111,6 +114,8 @@ interface PlayerProps {
   isDub?: boolean;
   subEpisodes?: EpisodeItem[];
   dubEpisodes?: EpisodeItem[];
+  streamType?: "m3u8" | "iframe";
+  embedUrl?: string;
 }
 
 declare global {
@@ -124,25 +129,30 @@ declare global {
   }
 }
 
-export default function Player({
-  animeId,
-  animeTitle,
-  animePoster,
-  episodeNumber,
-  m3u8Url,
-  defaultVttUrl,
-  linkPreEp,
-  linkNextEp,
-  isDub,
-  subEpisodes,
-  dubEpisodes,
-}: PlayerProps) {
+export default function Player(props: PlayerProps) {
+  if (props.streamType === "iframe" || isReanimeId(props.animeId)) {
+    return <IframePlayer {...props} />;
+  }
+
+  const {
+    animeId,
+    animeTitle,
+    animePoster,
+    episodeNumber,
+    initialEpTitle,
+    m3u8Url,
+    defaultVttUrl,
+    linkPreEp,
+    linkNextEp,
+    isDub,
+    subEpisodes,
+    dubEpisodes,
+  } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const artRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const octopusRef = useRef<any>(null);
-  const router = useRouter();
 
   // Hybrid PiP Refs
   const currentAssContentRef = useRef<string | null>(null);
@@ -157,8 +167,127 @@ export default function Player({
   const pipTrackElementRef = useRef<HTMLTrackElement | null>(null);
   const currentBlobUrlRef = useRef<string | null>(null);
 
+  // 즉시 플레이어 음원/재생 중지 및 자원 해제 (페이지 이동, 언마운트, 회차 이동 시 음원 누출 방지)
+  const stopPlayerImmediately = useCallback(() => {
+    try {
+      // 1) PiP 종료 (Document PiP 및 Native PiP)
+      if (docPipWindowRef.current && !docPipWindowRef.current.closed) {
+        try {
+          const pipVids = docPipWindowRef.current.document.querySelectorAll("video");
+          pipVids.forEach((v) => {
+            try {
+              v.pause();
+              v.muted = true;
+              v.volume = 0;
+              v.removeAttribute("src");
+              v.load();
+            } catch {}
+          });
+          docPipWindowRef.current.close();
+        } catch {}
+        docPipWindowRef.current = null;
+      }
+      if (typeof document !== "undefined" && document.pictureInPictureElement) {
+        try {
+          document.exitPictureInPicture().catch(() => {});
+        } catch {}
+      }
+
+      // 2) ArtPlayer 인스턴스 정지 및 HLS 해제
+      const art = artRef.current;
+      if (art) {
+        if (art.hls) {
+          try {
+            art.hls.stopLoad?.();
+            art.hls.detachMedia?.();
+            art.hls.destroy?.();
+          } catch {}
+          art.hls = null;
+        }
+        if (art.video) {
+          try {
+            art.video.pause();
+            art.video.muted = true;
+            art.video.volume = 0;
+            art.video.removeAttribute("src");
+            art.video.load();
+          } catch {}
+        }
+      }
+
+      // 3) 혹시 DOM 컨테이너에 남아있을 수 있는 모든 video 태그 정지
+      if (containerRef.current) {
+        try {
+          const vids = containerRef.current.querySelectorAll("video");
+          vids.forEach((v) => {
+            try {
+              v.pause();
+              v.muted = true;
+              v.volume = 0;
+              v.removeAttribute("src");
+              v.load();
+            } catch {}
+          });
+        } catch {}
+      }
+    } catch (e) {
+      console.warn("[stopPlayerImmediately error]:", e);
+    }
+  }, []);
+
   // Episode Navigator States
   const currentEpisodes = (isDub ? dubEpisodes : subEpisodes) || [];
+
+  // Episode & Stream States (무중단 회차 전환 지원)
+  const [currentEp, setCurrentEp] = useState<number>(episodeNumber);
+  const [currentEpTitle, setCurrentEpTitle] = useState<string>(() => {
+    if (initialEpTitle) return initialEpTitle;
+    const found = currentEpisodes.find((e) => e.number === episodeNumber);
+    return found?.title || `${episodeNumber}화`;
+  });
+  const [currentM3u8Url, setCurrentM3u8Url] = useState<string>(m3u8Url);
+  const [currentVttUrl, setCurrentVttUrl] = useState<string>(defaultVttUrl || "");
+  const [currentPreEp, setCurrentPreEp] = useState<number | null>(linkPreEp ?? null);
+  const [currentNextEp, setCurrentNextEp] = useState<number | null>(linkNextEp ?? null);
+
+  const currentEpRef = useRef(currentEp);
+  currentEpRef.current = currentEp;
+  const currentM3u8UrlRef = useRef(currentM3u8Url);
+  currentM3u8UrlRef.current = currentM3u8Url;
+  const currentPreEpRef = useRef(currentPreEp);
+  currentPreEpRef.current = currentPreEp;
+  const currentNextEpRef = useRef(currentNextEp);
+  currentNextEpRef.current = currentNextEp;
+  const isSwitchingEpRef = useRef(false);
+  const syncHistoryRef = useRef<((isCompleted?: boolean) => void) | null>(null);
+  const switchEpisodeRef = useRef<((targetEp: number) => Promise<void>) | null>(null);
+  const lastSyncTimeRef = useRef<number>(0);
+
+  // External navigation (props change) sync
+  const isFirstMountRef = useRef(true);
+  useEffect(() => {
+    if (isFirstMountRef.current) {
+      isFirstMountRef.current = false;
+      return;
+    }
+    setCurrentEp(episodeNumber);
+    if (initialEpTitle) {
+      setCurrentEpTitle(initialEpTitle);
+    } else {
+      const found = currentEpisodes.find((e) => e.number === episodeNumber);
+      setCurrentEpTitle(found?.title || `${episodeNumber}화`);
+    }
+    setCurrentM3u8Url(m3u8Url);
+    setCurrentVttUrl(defaultVttUrl || "");
+    setCurrentPreEp(linkPreEp ?? null);
+    setCurrentNextEp(linkNextEp ?? null);
+
+    // 이미 플레이어가 초기화되어 있고 회차가 달라졌다면 switchEpisode 호출 (전환 중이 아닐 때만)
+    if (artRef.current && !isSwitchingEpRef.current && episodeNumber !== currentEpRef.current && switchEpisodeRef.current) {
+      switchEpisodeRef.current(episodeNumber);
+    }
+  }, [episodeNumber, initialEpTitle, m3u8Url, defaultVttUrl, linkPreEp, linkNextEp]);
+
   const CHUNK_SIZE = 50;
   const chunkCount = Math.ceil(currentEpisodes.length / CHUNK_SIZE);
 
@@ -174,32 +303,234 @@ export default function Player({
   const [selectedChunk, setSelectedChunk] = useState<number>(getInitialChunkIndex);
   const [jumpInput, setJumpInput] = useState<string>("");
   const [jumpError, setJumpError] = useState<string>("");
-  const activePillRef = useRef<HTMLAnchorElement>(null);
+  const activePillRef = useRef<HTMLButtonElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // Sync selected chunk when episodeNumber or list changes
+  // Sync selected chunk when currentEp or list changes
   useEffect(() => {
     if (currentEpisodes.length > CHUNK_SIZE) {
-      const foundIdx = currentEpisodes.findIndex((e) => e.number === episodeNumber);
+      const foundIdx = currentEpisodes.findIndex((e) => e.number === currentEp);
       if (foundIdx !== -1) {
         setSelectedChunk(Math.floor(foundIdx / CHUNK_SIZE));
       }
     }
-  }, [episodeNumber, currentEpisodes.length]);
+  }, [currentEp, currentEpisodes.length]);
 
-  // Auto scroll active episode into center view
+  // Auto scroll active episode into center view (전체화면 풀림 방지)
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (activePillRef.current) {
-        activePillRef.current.scrollIntoView({
+      // 🌟 전체화면 중에는 외부 DOM 스크롤 시 브라우저가 전체화면을 강제 종료하므로 실행하지 않음
+      if (document.fullscreenElement || artRef.current?.fullscreen) return;
+      if (scrollContainerRef.current && activePillRef.current) {
+        const container = scrollContainerRef.current;
+        const pill = activePillRef.current;
+        const offsetLeft = pill.offsetLeft - container.offsetWidth / 2 + pill.offsetWidth / 2;
+        container.scrollTo({
+          left: Math.max(0, offsetLeft),
           behavior: "smooth",
-          inline: "center",
-          block: "nearest",
         });
       }
     }, 150);
     return () => clearTimeout(timer);
-  }, [selectedChunk, episodeNumber]);
+  }, [selectedChunk, currentEp]);
+
+  // 전체화면 해제 시 현재 활성 회차 알약 스크롤 위치 복원
+  useEffect(() => {
+    const onFsChange = () => {
+      if (!document.fullscreenElement && !artRef.current?.fullscreen) {
+        if (scrollContainerRef.current && activePillRef.current) {
+          const container = scrollContainerRef.current;
+          const pill = activePillRef.current;
+          const offsetLeft = pill.offsetLeft - container.offsetWidth / 2 + pill.offsetWidth / 2;
+          container.scrollTo({
+            left: Math.max(0, offsetLeft),
+            behavior: "smooth",
+          });
+        }
+      }
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange);
+    };
+  }, []);
+
+  // 무중단 다음화 / 특정 회차 전환 함수 (전체화면 유지)
+  const switchEpisode = useCallback(
+    async (targetEp: number) => {
+      if (isSwitchingEpRef.current || !artRef.current) return;
+      isSwitchingEpRef.current = true;
+
+      const art = artRef.current;
+      art.notice.show = `${targetEp}화 로딩 중...`;
+
+      try {
+        // 1. 현재 에피소드 시청 완료 기록 및 로컬 캐시 정리
+        const prevSaveKey = `anime_progress_${animeId}_ep${currentEpRef.current}`;
+        localStorage.removeItem(prevSaveKey);
+        if (syncHistoryRef.current) {
+          syncHistoryRef.current(true);
+        }
+
+        // 2. 이전 자막 정리 (새 회차 자막 로드 전 잔상 방지)
+        if (octopusRef.current) {
+          try {
+            octopusRef.current.dispose();
+          } catch {}
+          octopusRef.current = null;
+        }
+        if (containerRef.current) {
+          containerRef.current
+            .querySelectorAll(".libassjs-canvas-parent, canvas.libassjs-canvas")
+            .forEach((el) => el.remove());
+        }
+        if (art.template?.$player) {
+          art.template.$player
+            .querySelectorAll(".libassjs-canvas-parent, canvas.libassjs-canvas")
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .forEach((el: any) => el.remove());
+        }
+        // Native PiP 자막 트랙 큐 정리 (새 회차 자막 로드 전 잔상 방지)
+        if (nativePipTextTrackRef.current && nativePipTextTrackRef.current.cues) {
+          Array.from(nativePipTextTrackRef.current.cues).forEach((c) => {
+            try {
+              nativePipTextTrackRef.current?.removeCue(c);
+            } catch {}
+          });
+        }
+        if (art.template?.$subtitle) {
+          art.template.$subtitle.style.display = "none";
+        }
+
+        // 3. 새 회차 스트림 정보 API 호출
+        const res = await fetch(
+          `/api/anime/episode_info?id=${encodeURIComponent(animeId)}&ep=${targetEp}${isDub ? "&is_dub=1" : ""}`
+        );
+        const data = await res.json();
+
+        if (!data.success || !data.proxied_m3u8) {
+          throw new Error(data.message || "새 회차 스트림 정보를 불러오지 못했습니다.");
+        }
+
+        const newM3u8 = data.proxied_m3u8;
+        const newVtt = data.proxied_vtt || "";
+        let newNextEp = data.link_next_ep_num ?? null;
+        let newPreEp = data.link_pre_ep_num ?? null;
+        const epTitle = data.episode_title || `${targetEp}화`;
+
+        // 클라이언트 목록 기반 이전/다음 회차 번호 보정
+        const foundIdx = currentEpisodes.findIndex((e) => e.number === targetEp);
+        if (foundIdx !== -1) {
+          if (newPreEp === null && foundIdx > 0) newPreEp = currentEpisodes[foundIdx - 1].number;
+          if (newNextEp === null && foundIdx + 1 < currentEpisodes.length) newNextEp = currentEpisodes[foundIdx + 1].number;
+        }
+
+        // 4. 페이지 이동 없이 브라우저 URL 갱신 (Next.js 가로채기 방지 -> 전체화면 유지)
+        const nextUrl = `/watch/${animeId}/${targetEp}${isDub ? "?dub=1" : ""}`;
+        try {
+          // Next.js App Router의 라우트 변경(RSC 리마운트 및 전체화면 풀림) 인터셉트 방지: __NA: true
+          const nextState = { ...(window.history.state || {}), __NA: true };
+          window.history.replaceState(nextState, "", nextUrl);
+        } catch {
+          try {
+            window.history.replaceState(null, "", nextUrl);
+          } catch {}
+        }
+        document.title = `${animeTitle} ${epTitle} - Netizen Anime`;
+
+        // 5. 상태 및 ref 즉각 동기화 (비동기 렌더 지연 없이 이벤트 핸들러가 즉시 새 회차 참조)
+        currentEpRef.current = targetEp;
+        currentM3u8UrlRef.current = newM3u8;
+        currentPreEpRef.current = newPreEp;
+        currentNextEpRef.current = newNextEp;
+        lastSyncTimeRef.current = 0; // 새 회차 첫 진행도 즉시 DB 동기화 준비
+
+        setCurrentEp(targetEp);
+        setCurrentEpTitle(epTitle);
+        setCurrentM3u8Url(newM3u8);
+        setCurrentVttUrl(newVtt);
+        setCurrentPreEp(newPreEp);
+        setCurrentNextEp(newNextEp);
+
+        // 6. 플레이어 스트림 전환 및 즉시 재생 (전체화면 / PIP 상태 보존)
+        const isDocPip = Boolean(docPipWindowRef.current && !docPipWindowRef.current.closed);
+        const isNativePip = Boolean(
+          (document.pictureInPictureElement && document.pictureInPictureElement === art?.video) ||
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (art?.video && (art.video as any).webkitPresentationMode === "picture-in-picture")
+        );
+        const isAnyPip = isDocPip || isNativePip;
+
+        // PIP 모드 활성 중에는 전체화면 복원을 시도하지 않음 (전체화면일 때는 전체화면 완벽 보존)
+        const wasFullscreen = !isAnyPip && Boolean(art.fullscreen || document.fullscreenElement);
+        const wasFullscreenWeb = !isAnyPip && Boolean(art.fullscreenWeb);
+        try {
+          await Promise.race([
+            art.switchUrl(newM3u8),
+            new Promise((resolve) => setTimeout(resolve, 4000)),
+          ]);
+        } catch (switchErr) {
+          console.warn("[art.switchUrl non-fatal error]:", switchErr);
+        }
+
+        try {
+          await art.play();
+        } catch {
+          // 브라우저 자동재생 정책 대비
+        }
+
+        if (wasFullscreen && !art.fullscreen && !document.fullscreenElement) {
+          try {
+            art.fullscreen = true;
+          } catch {}
+        }
+        if (wasFullscreenWeb && !art.fullscreenWeb) {
+          try {
+            art.fullscreenWeb = true;
+          } catch {}
+        }
+
+        // Document PiP 활성 중이면 PIP 윈도우 스타일 동기화
+        if (isDocPip && docPipWindowRef.current && !docPipWindowRef.current.closed) {
+          try {
+            const pipWin = docPipWindowRef.current;
+            const pipDoc = pipWin.document;
+            const DYNAMIC_STYLE_IDS = ["dynamic-sub-style", "player-custom-settings-style"];
+            for (const id of DYNAMIC_STYLE_IDS) {
+              const src = document.getElementById(id);
+              if (!src) continue;
+              let dst = pipDoc.getElementById(id);
+              if (!dst) {
+                dst = pipDoc.createElement("style");
+                dst.id = id;
+                pipDoc.head.appendChild(dst);
+              }
+              dst.textContent = src.textContent;
+            }
+          } catch {}
+        }
+
+        // 7. 이어보기 시점 확인
+        const newSaveKey = `anime_progress_${animeId}_ep${targetEp}`;
+        const savedSec = parseFloat(localStorage.getItem(newSaveKey) || "0");
+        if (savedSec > 10) {
+          art.currentTime = savedSec;
+          art.notice.show = `이어보기: ${Math.floor(savedSec / 60)}분 ${Math.floor(savedSec % 60)}초부터 재생`;
+        } else {
+          art.notice.show = `▶ ${epTitle} 재생 시작`;
+        }
+      } catch (err) {
+        console.error("[Seamless switch error]:", err);
+        art.notice.show = `${targetEp}화 스트림을 불러오지 못했습니다. 다시 시도해 주세요.`;
+      } finally {
+        isSwitchingEpRef.current = false;
+      }
+    },
+    [animeId, animeTitle, isDub, currentEpisodes]
+  );
+  switchEpisodeRef.current = switchEpisode;
 
   const handleJump = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -218,7 +549,7 @@ export default function Player({
     }
 
     setJumpError("");
-    router.push(`/watch/${animeId}/${targetNum}${isDub ? "?dub=1" : ""}`);
+    switchEpisode(targetNum);
   };
 
   const displayedEpisodes =
@@ -287,6 +618,13 @@ export default function Player({
       if (secBack) secBack.textContent = `${dur}`;
       if (secFwd) secFwd.textContent = `${dur}`;
     } catch {}
+
+    if (artRef.current) {
+      artRef.current.hotkey = playerSettings.hotkey;
+      if (artRef.current.option) {
+        artRef.current.option.gesture = playerSettings.mobileGesture;
+      }
+    }
   }, [playerSettings]);
 
   // 계정 DB에서 플레이어 환경설정 불러와 동기화
@@ -591,13 +929,16 @@ export default function Player({
       }
 
       // ASS 또는 인메모리 자막인 경우: 실시간 WebVTT 변환 엔드포인트 HTTP URL 반환
-      if (animeTitle && episodeNumber) {
-        return `/api/anime/subtitles/vtt?title=${encodeURIComponent(animeTitle)}&ep=${episodeNumber}&name=${encodeURIComponent(subData.name)}&offset=${offsetVal}&_t=${Date.now()}`;
+      // currentEpRef.current를 사용하여 useCallback deps에서 currentEp를 제거
+      // → syncCuesToPipTrack → applySubtitle → ArtPlayer init effect 연쇄 재생성 방지 (전체화면 유지)
+      const ep = currentEpRef.current;
+      if (animeTitle && ep) {
+        return `/api/anime/subtitles/vtt?title=${encodeURIComponent(animeTitle)}&ep=${ep}&name=${encodeURIComponent(subData.name)}&offset=${offsetVal}&_t=${Date.now()}`;
       }
 
       return "";
     },
-    [animeTitle, episodeNumber]
+    [animeTitle]
   );
 
   // 6. 브라우저/비디오에 자동 등록된 네이티브 자막 트랙 전체 숨김
@@ -1194,10 +1535,11 @@ export default function Player({
               timeOffset: offset,
               onReady: () => {
                 art.notice.show = `${sub.name} (ASS 특수효과) 자막 로드 완료`;
-                if (containerRef.current) {
-                  const canvas = containerRef.current.querySelector("canvas.libassjs-canvas") as HTMLElement;
+                const playerEl = (art.template?.$player as HTMLElement | undefined) || containerRef.current;
+                if (playerEl) {
+                  const canvas = playerEl.querySelector("canvas.libassjs-canvas") as HTMLElement | null;
                   if (canvas) canvas.style.display = "block";
-                  const parent = containerRef.current.querySelector(".libassjs-canvas-parent") as HTMLElement;
+                  const parent = playerEl.querySelector(".libassjs-canvas-parent") as HTMLElement | null;
                   if (parent) parent.style.display = "block";
                 }
                 if (octopusRef.current && typeof octopusRef.current.resize === "function") {
@@ -1538,7 +1880,7 @@ export default function Player({
           creatorName: creator.name,
           website: creator.website,
           title: animeTitle,
-          episodeNumber,
+          episodeNumber: currentEpRef.current,
         }),
       });
       const data = await res.json();
@@ -1742,6 +2084,7 @@ export default function Player({
         if (!isMounted || !containerRef.current) return;
 
         if (artRef.current) {
+          stopPlayerImmediately();
           try {
             artRef.current.destroy(true);
           } catch {}
@@ -1753,13 +2096,28 @@ export default function Player({
 
         const art = new Artplayer({
           container: containerRef.current,
-          url: m3u8Url,
+          url: currentM3u8UrlRef.current || m3u8Url,
           type: "m3u8",
           customType: {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             m3u8: function (video: HTMLVideoElement, url: string, artInstance: any) {
               if (Hls && Hls.isSupported()) {
-                if (artInstance.hls) artInstance.hls.destroy();
+                if (artInstance.hls) {
+                  // 이미 Hls 인스턴스가 존재하면 destroy/detach하지 않고 소스만 교체
+                  // (미디어 분리로 인한 비디오 초기화 및 전체화면 풀림 방지)
+                  try {
+                    artInstance.hls.stopLoad();
+                    artInstance.hls.loadSource(url);
+                    artInstance.hls.startLoad();
+                    return;
+                  } catch (e) {
+                    console.warn("[HLS loadSource error, recreating]:", e);
+                    try {
+                      artInstance.hls.destroy();
+                    } catch {}
+                    artInstance.hls = null;
+                  }
+                }
                 const hls = new Hls({
                   enableWorker: true,
                   lowLatencyMode: true,
@@ -1812,6 +2170,7 @@ export default function Player({
           aspectRatio: true,
           setting: true,
           hotkey: playerSettings.hotkey,
+          gesture: true,
           pip: false,
           fullscreen: playerSettings.fullscreenBtn,
           fullscreenWeb: playerSettings.fullscreenWebBtn,
@@ -1908,14 +2267,6 @@ export default function Player({
             },
           ],
           settings: [
-            {
-              html: "플레이어 환경설정",
-              tooltip: "상세 설정",
-              click: function () {
-                setIsSettingsModalOpen(true);
-                if (art && art.setting) art.setting.show = false;
-              },
-            },
             {
               name: "subtitleSelector",
               width: 240,
@@ -2100,6 +2451,24 @@ export default function Player({
 
         artRef.current = art;
 
+        if (!isMounted) {
+          try {
+            if (art.hls) {
+              art.hls.stopLoad?.();
+              art.hls.detachMedia?.();
+              art.hls.destroy?.();
+            }
+            if (art.video) {
+              art.video.pause();
+              art.video.removeAttribute("src");
+              art.video.load();
+            }
+            art.destroy(true);
+          } catch {}
+          artRef.current = null;
+          return;
+        }
+
         // 🌟 미니 진행바(컨트롤 자동 숨김 = art-mini-progress-bar) 터치 오조작 차단:
         // 컨트롤이 내려간 상태에서는 미니 진행바에 닿는 touchstart/touchmove를 포캐스 단계에서 stopPropagation하여
         // ArtPlayer 내부 시크 핸들러 자체를 실행 불능으로 만든다(제스처 탐색 금지, 이동 불가).
@@ -2113,6 +2482,27 @@ export default function Player({
             };
             art.events.proxy($miniBottomEl, "touchstart", blockMiniProgressBarTouch, { capture: true });
             art.events.proxy($miniBottomEl, "touchmove", blockMiniProgressBarTouch, { capture: true });
+        }
+
+        // 🌟 모바일 화면 꾹 누르고 스와이프 탐색 (mobileGesture) 온/오프 제어:
+        // mobileGesture가 false일 때, 영상 화면 영역에서의 touchmove를 캡처 단계에서 stopPropagation하여
+        // Artplayer 내부의 제스처 시크 핸들러(좌우 스와이프 탐색)로 이벤트가 전파되는 것을 원천 차단한다.
+        // 하단 진행바 및 컨트롤 UI는 제외하여 일반적인 버튼 조작 및 진행바 탐색은 정상 유지된다.
+        if (art && art.template && art.template.$player) {
+          const blockScreenGestureTouchMove = function (evt: TouchEvent) {
+            if (playerSettingsRef.current.mobileGesture) return;
+            const target = evt.target as HTMLElement | null;
+            if (
+              target &&
+              target.closest(
+                ".art-bottom, .art-controls, .art-progress, .art-settings, .art-contextmenus, button, input, a, .player-settings-modal-root"
+              )
+            ) {
+              return;
+            }
+            evt.stopPropagation();
+          };
+          art.events.proxy(art.template.$player, "touchmove", blockScreenGestureTouchMove, { capture: true });
         }
 
         // 데스크톱 더블클릭 및 모바일 클릭/더블클릭 오작동 방지 플래그
@@ -2575,16 +2965,18 @@ export default function Player({
         };
 
         // Restore playback time from localStorage or Cloud DB
-        const saveKey = `anime_progress_${animeId}_ep${episodeNumber}`;
-        const savedSec = parseFloat(localStorage.getItem(saveKey) || "0");
+        const getSaveKey = (ep = currentEpRef.current) => `anime_progress_${animeId}_ep${ep}`;
+        const initialEp = currentEpRef.current;
+        const initialSaveKey = getSaveKey(initialEp);
+        const savedSec = parseFloat(localStorage.getItem(initialSaveKey) || "0");
 
         const tryRestorePlaybackTime = (targetSec: number, isFromCloud = false) => {
           if (targetSec <= 10) return;
           const dur = art.duration || art.template?.$video?.duration || 0;
           if (dur > 0 && isPlaybackCompleted(targetSec, dur)) {
             // 이미 100% (완료) 시청된 경우 처음부터 재생
-            console.log(`[Playback] Episode ${episodeNumber} was already completed (${targetSec.toFixed(1)}/${dur.toFixed(1)}s). Resetting to 0s.`);
-            localStorage.removeItem(saveKey);
+            console.log(`[Playback] Episode ${initialEp} was already completed (${targetSec.toFixed(1)}/${dur.toFixed(1)}s). Resetting to 0s.`);
+            localStorage.removeItem(initialSaveKey);
             return;
           }
 
@@ -2604,7 +2996,7 @@ export default function Player({
             .then((d) => {
               if (d.success && Array.isArray(d.items)) {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const epHistory = d.items.find((h: any) => h.episode_number === episodeNumber);
+                const epHistory = d.items.find((h: any) => h.episode_number === initialEp);
                 const cloudSec = epHistory ? parseFloat(epHistory.current_time || epHistory.watch_time || "0") : 0;
                 if (cloudSec > 10 && !epHistory.is_completed && artRef.current) {
                   const onRestoreCloud = () => {
@@ -2624,6 +3016,9 @@ export default function Player({
           const cur = art.currentTime;
           if (cur <= 2 && !isCompleted) return;
 
+          const ep = currentEpRef.current;
+          const watchUrl = currentM3u8UrlRef.current || m3u8Url;
+
           fetch("/api/anime/history", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -2631,12 +3026,12 @@ export default function Player({
               animeId,
               animeTitle,
               animePoster: animePoster || "",
-              episodeNumber,
+              episodeNumber: ep,
               // 실제 회차 제목 우선 (사이트에서 스크래핑된 제목 유지, 없으면 "N화" 폴백)
               episodeTitle:
-                currentEpisodes.find((e) => e.number === episodeNumber)?.title ||
-                `${episodeNumber}화`,
-              watchUrl: m3u8Url,
+                currentEpisodes.find((e) => e.number === ep)?.title ||
+                `${ep}화`,
+              watchUrl,
               currentTime: cur,
               duration: art.duration || 0,
               isCompleted,
@@ -2646,32 +3041,34 @@ export default function Player({
 
           setEpHistoryMap((prev) => ({
             ...prev,
-            [episodeNumber]: {
+            [ep]: {
               watch_time: cur,
               duration: art.duration || 0,
               is_completed: isCompleted,
             },
           }));
         };
+        syncHistoryRef.current = syncHistory;
 
-        let lastSyncTime = 0;
         art.on("video:timeupdate", () => {
           const cur = art.currentTime;
           const dur = art.duration || art.template?.$video?.duration || 0;
+          const curSaveKey = getSaveKey(currentEpRef.current);
+
           if (cur > 2 && !art.ended) {
             const completed = isPlaybackCompleted(cur, dur);
             if (completed) {
               // 95% 이상 시청 시 완료 처리 및 로컬 저장 삭제 (다시 틀었을 때 0초부터 시작하도록)
-              localStorage.removeItem(saveKey);
-              if (Date.now() - lastSyncTime > 5000) {
-                lastSyncTime = Date.now();
+              localStorage.removeItem(curSaveKey);
+              if (Date.now() - lastSyncTimeRef.current > 5000) {
+                lastSyncTimeRef.current = Date.now();
                 syncHistory(true);
               }
             } else {
-              localStorage.setItem(saveKey, String(cur));
+              localStorage.setItem(curSaveKey, String(cur));
               // Sync to Cloud DB every 35 seconds (서버리스 함수 및 DB 쓰기 70% 이상 절감)
-              if (Date.now() - lastSyncTime > 35000) {
-                lastSyncTime = Date.now();
+              if (Date.now() - lastSyncTimeRef.current > 35000) {
+                lastSyncTimeRef.current = Date.now();
                 syncHistory(false);
               }
             }
@@ -2691,8 +3088,8 @@ export default function Player({
         });
 
         art.on("video:pause", () => {
-          if (Date.now() - lastSyncTime > 3000) {
-            lastSyncTime = Date.now();
+          if (Date.now() - lastSyncTimeRef.current > 3000) {
+            lastSyncTimeRef.current = Date.now();
             syncHistory(false);
           }
         });
@@ -2701,33 +3098,66 @@ export default function Player({
         art.on("video:seeked", () => {
           if (debouncedSeekTimer) clearTimeout(debouncedSeekTimer);
           debouncedSeekTimer = setTimeout(() => {
-            lastSyncTime = Date.now();
+            lastSyncTimeRef.current = Date.now();
             syncHistory(false);
           }, 1200);
         });
 
         // Auto next episode on video end
         art.on("video:ended", () => {
-          localStorage.removeItem(saveKey);
+          const curSaveKey = getSaveKey(currentEpRef.current);
+          localStorage.removeItem(curSaveKey);
           syncHistory(true);
 
-          if (autoNextRef.current && linkNextEp) {
-            art.notice.show = "다음 화로 자동 이동합니다...";
+          const nextEp = currentNextEpRef.current;
+          if (autoNextRef.current && nextEp) {
+            art.notice.show = "다음 화로 자동 연결합니다...";
             setTimeout(() => {
-              router.push(`/watch/${animeId}/${linkNextEp}${isDub ? "?dub=1" : ""}`);
+              if (switchEpisodeRef.current) {
+                switchEpisodeRef.current(nextEp);
+              }
             }, 1000);
           }
         });
 
         const handleUnload = () => {
           syncHistory(false);
+          stopPlayerImmediately();
         };
+        const handlePopState = () => {
+          const match = window.location.pathname.match(/\/watch\/[^/]+\/(\d+)/);
+          if (match && match[1]) {
+            const targetEp = parseInt(match[1], 10);
+            if (targetEp !== currentEpRef.current && switchEpisodeRef.current) {
+              switchEpisodeRef.current(targetEp);
+            }
+            return;
+          }
+          stopPlayerImmediately();
+        };
+        const handleLinkClick = (e: MouseEvent) => {
+          const target = (e.target as HTMLElement)?.closest("a");
+          if (!target || !target.href) return;
+          if (target.hasAttribute("download")) return;
+          if (target.target && target.target !== "_self") return;
+          if (target.getAttribute("href")?.startsWith("#")) return;
+          if (containerRef.current && containerRef.current.contains(target)) return;
+          // 무중단 회차 전환 링크(/watch/...)는 비디오를 파괴하지 않음
+          if (target.getAttribute("href")?.includes(`/watch/${animeId}/`)) return;
+          stopPlayerImmediately();
+        };
+
         window.addEventListener("beforeunload", handleUnload);
         window.addEventListener("pagehide", handleUnload);
+        window.addEventListener("popstate", handlePopState);
+        document.addEventListener("click", handleLinkClick, { capture: true });
+
         cleanupUnload = () => {
           if (debouncedSeekTimer) clearTimeout(debouncedSeekTimer);
           window.removeEventListener("beforeunload", handleUnload);
           window.removeEventListener("pagehide", handleUnload);
+          window.removeEventListener("popstate", handlePopState);
+          document.removeEventListener("click", handleLinkClick, { capture: true });
         };
 
         // Resize & Fullscreen sync for SubtitlesOctopus libass canvas
@@ -2780,6 +3210,7 @@ export default function Player({
 
     return () => {
       isMounted = false;
+      stopPlayerImmediately();
       if (cleanupDoubleTap) {
         try {
           cleanupDoubleTap();
@@ -2817,19 +3248,15 @@ export default function Player({
       }
     };
   }, [
-    m3u8Url,
     animeId,
-    episodeNumber,
-    defaultVttUrl,
-    linkNextEp,
     isDub,
-    router,
     applySubtitle,
     toggleHybridPip,
     syncCuesToPipTrack,
     isNativePipActive,
     updateNativeTrackElement,
     hideAllNativeVideoTracks,
+    stopPlayerImmediately,
   ]);
 
   // Asynchronous Subtitles Loading
@@ -2837,7 +3264,7 @@ export default function Player({
     let isCancelled = false;
     setIsLoadingSubs(true);
 
-    fetch(`/api/anime/subtitles?title=${encodeURIComponent(animeTitle)}&ep=${episodeNumber}`)
+    fetch(`/api/anime/subtitles?title=${encodeURIComponent(animeTitle)}&ep=${currentEp}`)
       .then((r) => r.json())
       .then((data) => {
         if (isCancelled || !data.success) return;
@@ -2847,12 +3274,12 @@ export default function Player({
         }
 
         const newSubs: SubtitleItem[] = [];
-        if (defaultVttUrl) {
+        if (currentVttUrl) {
           newSubs.push({
             name: "기본 내장",
             format: "VTT",
             is_ass: false,
-            url: defaultVttUrl,
+            url: currentVttUrl,
           });
         }
 
@@ -2883,13 +3310,13 @@ export default function Player({
       })
       .catch((e) => {
         console.error("[Fetch Subtitles error]:", e);
-        if (!isCancelled && defaultVttUrl) {
+        if (!isCancelled && currentVttUrl) {
           const fallbackSubs: SubtitleItem[] = [
             {
               name: "기본 내장",
               format: "VTT",
               is_ass: false,
-              url: defaultVttUrl,
+              url: currentVttUrl,
             },
           ];
           setSubs(fallbackSubs);
@@ -2906,7 +3333,7 @@ export default function Player({
     return () => {
       isCancelled = true;
     };
-  }, [animeTitle, episodeNumber, defaultVttUrl]);
+  }, [animeTitle, currentEp, currentVttUrl]);
 
   // 4-Stage Audio Skip Trigger
   const triggerManualAudioSkip = async (isAuto = false) => {
@@ -2933,9 +3360,9 @@ export default function Player({
       const { runAudioSkipPipeline } = await import("@/lib/audioSkipEngine");
       const results = await runAudioSkipPipeline({
         animeId,
-        episodeNumber,
-        currentM3u8Url: m3u8Url,
-        compareEpisodeNumber: linkNextEp || (linkPreEp ? linkPreEp : undefined),
+        episodeNumber: currentEpRef.current,
+        currentM3u8Url: currentM3u8UrlRef.current || m3u8Url,
+        compareEpisodeNumber: currentNextEpRef.current || (currentPreEpRef.current ? currentPreEpRef.current : undefined),
         onProgress: (p) => {
           setAudioAnalysisText(p.step);
           if (artRef.current && (p.progress === 45 || p.progress === 75 || p.progress === 100)) {
@@ -3000,7 +3427,7 @@ export default function Player({
 
     const query = new URLSearchParams({
       title: animeTitle,
-      ep: String(episodeNumber),
+      ep: String(currentEp),
     });
     if (animePoster) query.set("poster", animePoster);
 
@@ -3036,8 +3463,8 @@ export default function Player({
             if (isCancelled) return;
             const matched = await runAudioSkipPipeline({
               animeId,
-              episodeNumber,
-              currentM3u8Url: m3u8Url,
+              episodeNumber: currentEp,
+              currentM3u8Url,
             });
             if (isCancelled) return;
             if (matched && matched.length > 0) {
@@ -3076,7 +3503,7 @@ export default function Player({
     return () => {
       isCancelled = true;
     };
-  }, [animeTitle, animeId, episodeNumber, animePoster, m3u8Url, applyTimelineHighlight, playerSettings.autoAudioAnalysis]);
+  }, [animeTitle, animeId, currentEp, animePoster, currentM3u8Url, applyTimelineHighlight, playerSettings.autoAudioAnalysis]);
 
   // Video timeupdate watcher for Auto-Skip & Floating Button
   useEffect(() => {
@@ -3131,6 +3558,23 @@ export default function Player({
 
   return (
     <div className="w-full max-w-5xl mx-auto">
+      {/* Breadcrumb Header (실시간 회차 번호 동기화) */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm">
+          <Link
+            href={`/anime/${animeId}`}
+            className="flex items-center gap-1.5 font-bold text-slate-300 transition hover:text-purple-400"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {animeTitle}
+          </Link>
+          <span className="text-slate-600">/</span>
+          <span className="font-extrabold text-purple-300">
+            {currentEpTitle} {isDub && "(더빙)"}
+          </span>
+        </div>
+      </div>
+
       {/* Player Wrapper */}
       <div className="artplayer-wrapper rounded-2xl relative">
         <div ref={containerRef} className="w-full h-full" />
@@ -3162,14 +3606,15 @@ export default function Player({
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-purple-500/20 bg-slate-900/80 p-4 backdrop-blur-md">
         {/* Navigation Buttons */}
         <div className="flex items-center gap-2">
-          {linkPreEp ? (
-            <Link
-              href={`/watch/${animeId}/${linkPreEp}${isDub ? "?dub=1" : ""}`}
-              className="flex items-center gap-1 rounded-xl bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-purple-600 hover:text-white"
+          {currentPreEp ? (
+            <button
+              type="button"
+              onClick={() => switchEpisode(currentPreEp)}
+              className="flex items-center gap-1 rounded-xl bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-purple-600 hover:text-white cursor-pointer"
             >
               <ChevronLeft className="h-4 w-4" />
-              이전 화 ({linkPreEp}화)
-            </Link>
+              이전 화 ({currentPreEp}화)
+            </button>
           ) : (
             <span className="rounded-xl bg-slate-950 px-3 py-2 text-xs text-slate-600 cursor-not-allowed">
               첫 번째 화
@@ -3184,14 +3629,15 @@ export default function Player({
             회차 목록
           </Link>
 
-          {linkNextEp ? (
-            <Link
-              href={`/watch/${animeId}/${linkNextEp}${isDub ? "?dub=1" : ""}`}
-              className="flex items-center gap-1 rounded-xl bg-purple-600 px-3 py-2 text-xs font-bold text-white shadow-lg shadow-purple-600/30 transition hover:bg-purple-500"
+          {currentNextEp ? (
+            <button
+              type="button"
+              onClick={() => switchEpisode(currentNextEp)}
+              className="flex items-center gap-1 rounded-xl bg-purple-600 px-3 py-2 text-xs font-bold text-white shadow-lg shadow-purple-600/30 transition hover:bg-purple-500 cursor-pointer"
             >
-              다음 화 ({linkNextEp}화)
+              다음 화 ({currentNextEp}화)
               <ChevronRight className="h-4 w-4" />
-            </Link>
+            </button>
           ) : (
             <span className="rounded-xl bg-slate-950 px-3 py-2 text-xs text-slate-600 cursor-not-allowed">
               마지막 화
@@ -3331,11 +3777,11 @@ export default function Player({
               {dubEpisodes && dubEpisodes.length > 0 && (
                 <div className="inline-flex items-center rounded-full bg-slate-950/80 p-1 border border-white/10 text-xs">
                   {(() => {
-                    const targetSubEp = subEpisodes?.some((e) => e.number === episodeNumber)
-                      ? episodeNumber
+                    const targetSubEp = subEpisodes?.some((e) => e.number === currentEp)
+                      ? currentEp
                       : subEpisodes?.[0]?.number || 1;
-                    const targetDubEp = dubEpisodes.some((e) => e.number === episodeNumber)
-                      ? episodeNumber
+                    const targetDubEp = dubEpisodes.some((e) => e.number === currentEp)
+                      ? currentEp
                       : dubEpisodes[0]?.number || 1;
                     return (
                       <>
@@ -3436,7 +3882,7 @@ export default function Player({
             className="mt-2 flex gap-2 overflow-x-auto py-1.5 scrollbar-thin scrollbar-thumb-purple-500/30"
           >
             {displayedEpisodes.map((ep) => {
-              const isActive = ep.number === episodeNumber;
+              const isActive = ep.number === currentEp;
               const watched = epHistoryMap[ep.number];
               let pct = 0;
               let isCompleted = false;
@@ -3459,11 +3905,12 @@ export default function Player({
               const hasProgress = watched && (isCompleted || pct > 0);
 
               return (
-                <Link
+                <button
+                  type="button"
                   key={ep.number}
                   ref={isActive ? activePillRef : null}
-                  href={`/watch/${animeId}/${ep.number}${isDub ? "?dub=1" : ""}`}
-                  className={`group relative flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition overflow-hidden ${
+                  onClick={() => switchEpisode(ep.number)}
+                  className={`group relative flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition overflow-hidden cursor-pointer ${
                     isActive
                       ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md shadow-purple-500/30 ring-1 ring-purple-400 scale-105 font-bold"
                       : isCompleted
@@ -3497,7 +3944,7 @@ export default function Player({
                       />
                     </div>
                   )}
-                </Link>
+                </button>
               );
             })}
           </div>
@@ -3630,12 +4077,12 @@ export default function Player({
                       {matchedSub ? (
                         <span className="text-emerald-400 flex items-center gap-1 font-medium">
                           <CheckCircle2 className="h-3 w-3" />
-                          현재 {episodeNumber}화 자막 매칭 완료
+                          현재 {currentEp}화 자막 매칭 완료
                         </span>
                       ) : c.is_current_ep ? (
                         <span className="text-purple-300 flex items-center gap-1 font-medium">
                           <CheckCircle2 className="h-3 w-3 text-purple-400" />
-                          현재 {episodeNumber}화 자막 제공
+                          현재 {currentEp}화 자막 제공
                         </span>
                       ) : (
                         <span>
