@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getProviderByAnimeId } from "@/lib/providers";
+import { getAnimeDetail } from "@/lib/linkkf";
 import { getSessionUser } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
@@ -16,8 +16,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Missing anime id" }, { status: 400 });
   }
 
-  const provider = getProviderByAnimeId(id);
-  const detail = await provider.getAnimeDetail(id);
+  const detail = await getAnimeDetail(id);
   if (!detail) {
     return NextResponse.json({ error: "Anime not found" }, { status: 404 });
   }

@@ -1,9 +1,3 @@
-import {
-  parseSeason,
-  generateAnissiaSearchQueries,
-  scoreAnimeMatch,
-} from "./subtitles";
-
 export const ANILIST_URL = "https://graphql.anilist.co";
 export const ANISKIP_URL = "https://api.aniskip.com/v2/skip-times";
 
@@ -19,113 +13,38 @@ const skipCache: Record<string, SkipInterval[]> = {};
 
 function cleanSearchTitle(text: string): string {
   if (!text) return "";
-  let t = text.replace(/\[.*?\]|\(.*?\)|【.*?】|<.*?>/g, " ");
-  t = t.replace(/\bBD\b/gi, " ");
-  t = t.replace(/\s+\d+화(?:\s|$)/g, " ");
+  let t = text.replace(/\[.*?\]|\(.*?\)|【.*?】|<.*?>|~.*?~/g, " ");
   t = t.replace(/[^\w\s가-힣a-zA-Z0-9ぁ-んァ-ヶー一-龥]/g, " ");
   return t.replace(/\s+/g, " ").trim();
 }
 
-// 일본어 원제에서 극장판, 부제(「...」, 편), 시즌 표기를 제거하여 순수 기본형 추출
-export function cleanJapaneseBaseTitle(jp: string): string {
-  if (!jp) return "";
-  let s = jp;
-  s = s.replace(/^(?:劇場版|映画)\s*/gi, "");
-  s = s.replace(/「.*?」|『.*?』|〜.*?〜|~.*?~/g, " ");
-  s = s.replace(/第?\d+期|Season\s*\d+|\b\d+(?:st|nd|rd|th)\b/gi, " ");
-  s = s.replace(/[ⅠⅡⅢⅣⅤⅥ]|(?:\b(?:VI|IV|III|II)\b)/g, " ");
-  s = s.replace(/\s*[^\s]+編(?:\s|$)/g, " ");
-  s = s.replace(/\s+/g, " ").trim();
-  return s;
-}
-
-// 애니시아에서 스마트 다단계 검색 및 가중치 매칭으로 올바른 일본어 원제 추출
 export async function getJapaneseTitleFromAnissia(koreanTitle: string): Promise<string> {
   try {
-    const targetSeason = parseSeason(koreanTitle);
-    const queries = generateAnissiaSearchQueries(koreanTitle);
+    const koMatch = koreanTitle.match(/^[가-힣0-9\s~!?.,-]+/);
+    let clean = koMatch ? koMatch[0].trim() : cleanSearchTitle(koreanTitle);
+    clean = clean.replace(/\s+\d+기$/g, "").trim();
 
-    let bestAnime: { animeNo: number; subject: string; originalSubject?: string } | null = null;
-    let bestScore = 0;
-    const allContent: Array<{ animeNo: number; subject: string; originalSubject?: string }> = [];
+    const words = clean.split(/\s+/);
+    const searchTerms = [clean];
+    if (words.length >= 2) searchTerms.push(words.slice(0, 2).join(" "));
+    if (words.length > 0) searchTerms.push(words[0]);
 
-    for (const q of queries.slice(0, 4)) {
-      try {
-        const url = `https://api.anissia.net/anime/list/0?q=${encodeURIComponent(q)}`;
-        const res = await fetch(url, {
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-          },
-          signal: AbortSignal.timeout(3000),
-        });
-        if (!res.ok) continue;
-
+    for (const term of searchTerms) {
+      if (!term || term.length < 2) continue;
+      const res = await fetch(`https://api.anissia.net/anime/list/0?q=${encodeURIComponent(term)}`, {
+        signal: AbortSignal.timeout(3500),
+      });
+      if (res.ok) {
         const json = await res.json();
         const content = json?.data?.content || [];
-        allContent.push(...content);
-
-        for (const item of content) {
-          const sc = scoreAnimeMatch(koreanTitle, targetSeason, item);
-          if (sc > bestScore) {
-            bestScore = sc;
-            bestAnime = item;
-          }
-        }
-        if (bestScore >= 120) break;
-      } catch {}
-    }
-
-    // 1) 최적 매칭 작품에 originalSubject가 있는 경우
-    if (bestAnime && bestScore >= 50 && bestAnime.originalSubject) {
-      if (targetSeason !== null) {
-        return bestAnime.originalSubject;
-      }
-      return cleanJapaneseBaseTitle(bestAnime.originalSubject) || bestAnime.originalSubject;
-    }
-
-    // 2) 최적 매칭 작품의 originalSubject가 비어있는 구작 1기 등의 경우,
-    // 검색된 같은 시리즈의 다른 항목에서 originalSubject를 가져와 순수 기본형으로 정제
-    for (const item of allContent) {
-      if (item.originalSubject) {
-        const baseJp = cleanJapaneseBaseTitle(item.originalSubject);
-        if (baseJp && baseJp.length >= 2) {
-          if (targetSeason && targetSeason >= 2) {
-            return `${baseJp} ${targetSeason}`;
-          }
-          return baseJp;
+        if (content.length > 0) {
+          const orig = content[0].originalSubject;
+          if (orig) return orig;
         }
       }
     }
   } catch {}
   return "";
-}
-
-// AniList 검색 결과 중 대상 시즌과 가장 일치하는 미디어 평가
-function scoreAniListMedia(media: any, targetSeason: number | null): number {
-  let score = 0;
-  const titles = [media.title?.english, media.title?.romaji, media.title?.native].filter(Boolean);
-  const titleCombined = titles.join(" ");
-  const mediaSeason = parseSeason(titleCombined);
-
-  if (targetSeason === null) {
-    if (mediaSeason === null || mediaSeason === 1) {
-      score += 60;
-    } else {
-      score -= 60;
-    }
-  } else {
-    if (mediaSeason === targetSeason) {
-      score += 80;
-    } else {
-      score -= 80;
-    }
-  }
-
-  if (media.format === "TV") score += 20;
-  if (media.format === "MOVIE") score -= 20;
-
-  return score;
 }
 
 export async function findMalId(title: string, posterUrl = ""): Promise<number | null> {
@@ -160,9 +79,19 @@ export async function findMalId(title: string, posterUrl = ""): Promise<number |
   const clean = cleanSearchTitle(title);
   if (malIdCache[clean]) return malIdCache[clean];
 
-  const targetSeason = parseSeason(title);
+  // Season number
+  const seasonMatch = title.match(/(\d+)\s*기|Season\s*(\d+)|(\d+)(?:nd|rd|th)\s*Season/i);
+  let seasonNum: number | null = null;
+  if (seasonMatch) {
+    for (let i = 1; i < seasonMatch.length; i++) {
+      if (seasonMatch[i]) {
+        seasonNum = parseInt(seasonMatch[i], 10);
+        break;
+      }
+    }
+  }
 
-  const koMatch = title.match(/[가-힣0-9\s~!?.,-]+/);
+  const koMatch = title.match(/^[가-힣0-9\s~!?.,-]+/);
   const enMatch = title.match(/[a-zA-Z][a-zA-Z0-9\s~!?.,-]*$/);
 
   const koPart = koMatch ? koMatch[0].trim() : "";
@@ -170,22 +99,26 @@ export async function findMalId(title: string, posterUrl = ""): Promise<number |
 
   const searchCandidates: string[] = [];
 
-  // 1. 일본어 원제 (스마트 애니시아 매칭)
+  if (enPart) {
+    searchCandidates.push(enPart);
+    if (seasonNum && !enPart.includes(String(seasonNum))) {
+      searchCandidates.push(`${enPart} Season ${seasonNum}`);
+    }
+  }
+
   const jpTitle = await getJapaneseTitleFromAnissia(title);
   if (jpTitle) {
     searchCandidates.push(jpTitle);
-  }
-
-  // 2. 영문 제목 + 시즌
-  if (enPart && enPart.length >= 2) {
-    if (targetSeason && !enPart.includes(String(targetSeason))) {
-      searchCandidates.push(`${enPart} Season ${targetSeason}`);
+    const cleanJp = jpTitle.replace(/第?\d+期|Season\s*\d+|2nd|3rd|4th|5th/gi, "").trim();
+    if (cleanJp && cleanJp !== jpTitle) {
+      searchCandidates.push(cleanJp);
     }
-    searchCandidates.push(enPart);
+    if (seasonNum) {
+      searchCandidates.push(`${cleanJp || jpTitle} Season ${seasonNum}`);
+    }
   }
 
-  // 3. 한글 제목
-  if (koPart && koPart.length >= 2) {
+  if (koPart) {
     searchCandidates.push(koPart);
     const words = koPart.split(/\s+/);
     if (words.length >= 2) searchCandidates.push(words.slice(0, 2).join(" "));
@@ -196,7 +129,7 @@ export async function findMalId(title: string, posterUrl = ""): Promise<number |
   for (const candidate of searchCandidates) {
     if (!candidate || candidate.length < 2) continue;
     const safeCand = candidate.replace(/["\\]/g, "").trim();
-    const query = `{ Page(page: 1, perPage: 6) { media(search: "${safeCand}", type: ANIME) { id idMal title { romaji native english } format } } }`;
+    const query = `{ Page(page: 1, perPage: 3) { media(search: "${safeCand}", type: ANIME) { id idMal title { romaji native english } } } }`;
 
     try {
       const res = await fetch(ANILIST_URL, {
@@ -209,20 +142,11 @@ export async function findMalId(title: string, posterUrl = ""): Promise<number |
       if (res.ok) {
         const data = await res.json();
         const mediaList = data?.data?.Page?.media || [];
-        if (mediaList.length > 0) {
-          let bestMedia = null;
-          let bestMediaScore = -999;
-          for (const m of mediaList) {
-            if (!m?.idMal) continue;
-            const sc = scoreAniListMedia(m, targetSeason);
-            if (sc > bestMediaScore) {
-              bestMediaScore = sc;
-              bestMedia = m;
-            }
-          }
-          if (bestMedia && bestMediaScore >= 0) {
-            malIdCache[clean] = bestMedia.idMal;
-            return bestMedia.idMal;
+        for (const m of mediaList) {
+          const malId = m?.idMal;
+          if (malId) {
+            malIdCache[clean] = malId;
+            return malId;
           }
         }
       }

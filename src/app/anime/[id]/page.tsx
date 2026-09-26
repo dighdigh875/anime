@@ -1,8 +1,7 @@
 import Navbar from "@/components/Navbar";
 import FavoriteButton from "@/components/FavoriteButton";
 import EpisodeListSection from "@/components/EpisodeListSection";
-import ReanimeDetailFallback from "@/components/ReanimeDetailFallback";
-import { getProviderByAnimeId } from "@/lib/providers";
+import { getAnimeDetail } from "@/lib/linkkf";
 import { requireAuth, getCurrentUserId } from "@/lib/auth";
 import { getAnimeHistoryMap } from "@/lib/db";
 import Link from "next/link";
@@ -23,19 +22,8 @@ export default async function AnimeDetailPage({
   const { dub } = await searchParams;
   const isDub = dub === "1";
 
-  const provider = getProviderByAnimeId(id);
-  const anime = await provider.getAnimeDetail(id);
+  const anime = await getAnimeDetail(id);
   if (!anime) {
-    if (id.startsWith("re_")) {
-      return (
-        <div className="min-h-screen bg-[#0b0f19]">
-          <Navbar />
-          <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-            <ReanimeDetailFallback id={id} initialIsDub={isDub} />
-          </main>
-        </div>
-      );
-    }
     notFound();
   }
 

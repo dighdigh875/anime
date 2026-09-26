@@ -1,11 +1,10 @@
 import Navbar from "@/components/Navbar";
 import Player from "@/components/Player";
-import ReanimeWatchFallback from "@/components/ReanimeWatchFallback";
-import { getProviderByAnimeId } from "@/lib/providers";
+import { getAnimeDetail, getEpisodeStream } from "@/lib/linkkf";
 import { requireAuth } from "@/lib/auth";
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Film } from "lucide-react";
 
 export default async function WatchPage({
   params,
@@ -20,19 +19,9 @@ export default async function WatchPage({
   const { dub } = await searchParams;
   const epNum = parseInt(ep, 10) || 1;
   const isDub = dub === "1";
-  const isReanime = id.startsWith("re_");
 
-  const provider = getProviderByAnimeId(id);
-  const anime = await provider.getAnimeDetail(id);
+  const anime = await getAnimeDetail(id);
   if (!anime) {
-    if (isReanime) {
-      return (
-        <div className="min-h-screen bg-[#0b0f19] pb-16">
-          <Navbar />
-          <ReanimeWatchFallback id={id} ep={epNum} isDub={isDub} />
-        </div>
-      );
-    }
     notFound();
   }
 
@@ -44,27 +33,11 @@ export default async function WatchPage({
   const watchUrl = matched?.watch_url || "";
 
   if (!watchUrl) {
-    if (isReanime) {
-      return (
-        <div className="min-h-screen bg-[#0b0f19] pb-16">
-          <Navbar />
-          <ReanimeWatchFallback id={id} ep={epNum} isDub={isDub} />
-        </div>
-      );
-    }
     notFound();
   }
 
-  const streamInfo = await provider.getEpisodeStream(watchUrl);
-  if (!streamInfo || (!streamInfo.m3u8_url && !streamInfo.embed_url)) {
-    if (isReanime) {
-      return (
-        <div className="min-h-screen bg-[#0b0f19] pb-16">
-          <Navbar />
-          <ReanimeWatchFallback id={id} ep={epNum} isDub={isDub} />
-        </div>
-      );
-    }
+  const streamInfo = await getEpisodeStream(watchUrl);
+  if (!streamInfo || !streamInfo.m3u8_url) {
     return (
       <div className="min-h-screen bg-[#0b0f19]">
         <Navbar />
@@ -86,13 +59,11 @@ export default async function WatchPage({
     );
   }
 
-  const isIframe = streamInfo.stream_type === "iframe" || !streamInfo.m3u8_url?.includes(".m3u8");
-  const embedUrl = streamInfo.embed_url || streamInfo.player_url || "";
   const playerRef = streamInfo.player_url || "";
   const rawM3u8 = streamInfo.m3u8_url || "";
   const rawVtt = streamInfo.vtt_url || "";
 
-  const proxiedM3u8 = (!isIframe && rawM3u8)
+  const proxiedM3u8 = rawM3u8
     ? `/api/anime/stream/m3u8?url=${encodeURIComponent(rawM3u8)}&ref=${encodeURIComponent(playerRef)}`
     : "";
   const proxiedVtt = rawVtt ? `/api/anime/stream/vtt?url=${encodeURIComponent(rawVtt)}` : "";
@@ -120,13 +91,36 @@ export default async function WatchPage({
       <Navbar />
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        {/* Player Container (브레드크럼 헤더 및 무중단 동기화 내장) */}
+        {/* Breadcrumb Header */}
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm">
+            <Link
+              href={`/anime/${id}`}
+              className="flex items-center gap-1.5 font-bold text-slate-300 transition hover:text-purple-400"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              {anime.title}
+            </Link>
+            <span className="text-slate-600">/</span>
+            <span className="font-extrabold text-purple-300">
+              {epTitle} {isDub && "(더빙)"}
+            </span>
+          </div>
+
+          <Link
+            href={`/anime/${id}`}
+            className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200"
+          >
+            <Film className="h-3.5 w-3.5" /> 다른 회차 선택
+          </Link>
+        </div>
+
+        {/* Player Container */}
         <Player
           animeId={id}
           animeTitle={anime.title}
           animePoster={anime.poster}
           episodeNumber={epNum}
-          initialEpTitle={epTitle}
           m3u8Url={proxiedM3u8}
           defaultVttUrl={proxiedVtt}
           linkPreEp={linkPreEpNum}
@@ -134,8 +128,6 @@ export default async function WatchPage({
           isDub={isDub}
           subEpisodes={anime.sub_episodes}
           dubEpisodes={anime.dub_episodes}
-          streamType={isIframe ? "iframe" : "m3u8"}
-          embedUrl={embedUrl}
         />
       </main>
     </div>

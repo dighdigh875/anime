@@ -1,128 +1,54 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  getLinkkfBaseUrl,
-  setLinkkfBaseUrl,
-  DEFAULT_LINKKF_URL,
-  getOhli24BaseUrl,
-  setOhli24BaseUrl,
-  DEFAULT_OHLI24_URL,
-  getReanimeBaseUrl,
-  setReanimeBaseUrl,
-  DEFAULT_REANIME_URL,
-} from "@/lib/db";
+import { getLinkkfBaseUrl, setLinkkfBaseUrl, DEFAULT_LINKKF_URL } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 import { assertSafeProxyUrl, UnsafeProxyUrlError } from "@/lib/proxyGuard";
 
 export const dynamic = "force-dynamic";
 
-// 헬스체크 캐시 (30초)
-const healthCache: Record<string, { ok: boolean; latencyMs: number; statusText?: string; timestamp: number }> = {};
-const CACHE_TTL_MS = 30 * 1000;
-
-// 헬스체크 함수 (해외 CDN/클라우드플레어 지연 고려하여 기본 8초 타임아웃)
-async function checkUrlHealth(
-  url: string,
-  timeoutMs: number = 8000,
-  bypassCache: boolean = false
-): Promise<{ ok: boolean; latencyMs: number; statusText?: string }> {
-  const now = Date.now();
-  if (!bypassCache && healthCache[url] && now - healthCache[url].timestamp < CACHE_TTL_MS) {
-    return healthCache[url];
-  }
-
+// 헬스체크 함수 (3초 타임아웃)
+async function checkUrlHealth(url: string): Promise<{ ok: boolean; latencyMs: number; statusText?: string }> {
   const start = Date.now();
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
 
     const res = await fetch(url, {
       method: "GET",
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
       },
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
 
     const latencyMs = Date.now() - start;
-    const serverHeader = res.headers.get("server")?.toLowerCase() || "";
-    const isCf =
-      res.status === 403 &&
-      (res.headers.get("cf-mitigated") === "challenge" ||
-        serverHeader.includes("cloudflare"));
-    // 200~399 상태코드 혹은 Cloudflare WAF 챌린지는 도메인이 정상 동작함을 의미
-    const ok: boolean = (res.status >= 200 && res.status < 400) || isCf;
-    const result = {
-      ok,
-      latencyMs,
-      statusText: isCf ? "200 OK (Cloudflare)" : `${res.status} ${res.statusText}`,
-    };
-    healthCache[url] = { ...result, timestamp: now };
-    return result;
+    // 200~399 상태코드는 정상 연결로 간주
+    return { ok: res.status >= 200 && res.status < 400, latencyMs, statusText: `${res.status} ${res.statusText}` };
   } catch (err: any) {
     const latencyMs = Date.now() - start;
-    const result = {
-      ok: false,
-      latencyMs,
-      statusText: err?.message || "Connection timeout or failed",
-    };
-    // 실패 시 5초만 캐시하여 빠른 복구 확인
-    healthCache[url] = { ...result, timestamp: now - CACHE_TTL_MS + 5000 };
-    return result;
+    return { ok: false, latencyMs, statusText: err?.message || "Connection timeout or failed" };
   }
 }
 
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
-  const rawProvider = searchParams.get("provider") || "linkkf";
-  const provider: "linkkf" | "ohli24" | "reanime" =
-    rawProvider === "reanime" ? "reanime" : rawProvider === "ohli24" ? "ohli24" : "linkkf";
+export async function GET() {
+  // 보안: 설정된 베이스 URL이 외부에 노출되지 않도록 로그인 요구
+  const user = await getSessionUser();
+  if (!user) {
+    return NextResponse.json(
+      { success: false, message: "로그인이 필요합니다." },
+      { status: 401 }
+    );
+  }
 
   try {
-    const isReanime = provider === "reanime";
-    const isOhli24 = provider === "ohli24";
-
-    const debug = searchParams.get("debug") === "1";
-    if (debug) {
-      try {
-        const debugRes = await fetch("https://reanime.to/api/v1/home", {
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            Accept: "application/json",
-          },
-        });
-        const debugText = await debugRes.text();
-        return NextResponse.json({
-          status: debugRes.status,
-          headers: Object.fromEntries(debugRes.headers.entries()),
-          preview: debugText.substring(0, 300),
-        });
-      } catch (e: any) {
-        return NextResponse.json({ error: e.message });
-      }
-    }
-
-    const currentBaseUrl = isReanime
-      ? await getReanimeBaseUrl()
-      : isOhli24
-      ? await getOhli24BaseUrl()
-      : await getLinkkfBaseUrl();
-    const defaultUrl = isReanime
-      ? DEFAULT_REANIME_URL
-      : isOhli24
-      ? DEFAULT_OHLI24_URL
-      : DEFAULT_LINKKF_URL;
-    const checkTargetUrl = isReanime ? `${currentBaseUrl}/api/v1/home` : currentBaseUrl;
-    const health = await checkUrlHealth(checkTargetUrl, isReanime ? 8000 : 5000);
+    const currentBaseUrl = await getLinkkfBaseUrl();
+    const health = await checkUrlHealth(currentBaseUrl);
 
     return NextResponse.json({
       success: true,
-      provider,
       baseUrl: currentBaseUrl,
-      defaultUrl,
+      defaultUrl: DEFAULT_LINKKF_URL,
       isHealthy: health.ok,
       latencyMs: health.latencyMs,
       statusText: health.statusText,
@@ -157,13 +83,6 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const rawUrl = body.baseUrl?.trim();
     const force = Boolean(body.force);
-    const rawProvider = body.provider;
-    const provider: "linkkf" | "ohli24" | "reanime" =
-      rawProvider === "reanime"
-        ? "reanime"
-        : rawProvider === "ohli24"
-        ? "ohli24"
-        : "linkkf";
 
     if (!rawUrl) {
       return NextResponse.json(
@@ -178,19 +97,12 @@ export async function POST(request: NextRequest) {
     }
     formatted = formatted.replace(/\/+$/, "");
 
-    const defaultUrl =
-      provider === "reanime"
-        ? DEFAULT_REANIME_URL
-        : provider === "ohli24"
-        ? DEFAULT_OHLI24_URL
-        : DEFAULT_LINKKF_URL;
-
     // 유효한 URL 형식 검증
     try {
       new URL(formatted);
     } catch {
       return NextResponse.json(
-        { success: false, message: `올바른 URL 형식이 아닙니다 (예: ${defaultUrl})` },
+        { success: false, message: "올바른 URL 형식이 아닙니다 (예: https://linkkf.tv)" },
         { status: 400 }
       );
     }
@@ -208,9 +120,8 @@ export async function POST(request: NextRequest) {
       throw e;
     }
 
-    // 연결성 테스트 (저장 시에는 캐시 우회)
-    const checkTarget = provider === "reanime" ? `${formatted}/api/v1/home` : formatted;
-    const health = await checkUrlHealth(checkTarget, 8000, true);
+    // 연결성 테스트
+    const health = await checkUrlHealth(formatted);
     if (!health.ok && !force) {
       return NextResponse.json(
         {
@@ -223,18 +134,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const saved =
-      provider === "reanime"
-        ? await setReanimeBaseUrl(formatted)
-        : provider === "ohli24"
-        ? await setOhli24BaseUrl(formatted)
-        : await setLinkkfBaseUrl(formatted);
-
-    delete healthCache[formatted];
-    if (provider === "reanime") {
-      delete healthCache[checkTarget];
-    }
-
+    const saved = await setLinkkfBaseUrl(formatted);
     if (!saved) {
       return NextResponse.json(
         { success: false, message: "데이터베이스 저장에 실패했습니다." },
@@ -242,14 +142,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const providerLabel =
-      provider === "reanime" ? "ReAnime" : provider === "ohli24" ? "Ohli24" : "Linkkf";
-
     return NextResponse.json({
       success: true,
-      provider,
       baseUrl: formatted,
-      message: `${providerLabel} 스트리밍 베이스 URL이 성공적으로 변경되었습니다.`,
+      message: "스트리밍 베이스 URL이 성공적으로 변경되었습니다.",
       health,
     });
   } catch (error: any) {

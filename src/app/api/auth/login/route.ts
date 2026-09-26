@@ -66,7 +66,6 @@ export async function POST(request: NextRequest) {
       username: user.username,
       nickname: user.nickname || user.username,
       isAdmin: Boolean(user.is_admin),
-      isFirstLogin: Boolean(user.is_first_login),
     });
 
     const response = NextResponse.json({
@@ -77,7 +76,6 @@ export async function POST(request: NextRequest) {
         username: user.username,
         nickname: user.nickname || user.username,
         isAdmin: Boolean(user.is_admin),
-        isFirstLogin: Boolean(user.is_first_login),
       },
     });
 
