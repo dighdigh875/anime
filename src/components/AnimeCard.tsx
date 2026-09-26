@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AnimeListItem } from "@/lib/linkkf";
+import { AnimeListItem } from "@/lib/reanime-client";
 import { PlayCircle } from "lucide-react";
 
 export default function AnimeCard({ anime }: { anime: AnimeListItem }) {

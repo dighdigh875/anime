@@ -6,12 +6,12 @@ import { Globe, RefreshCw, CheckCircle2, AlertTriangle, X, ShieldAlert, External
 interface BaseUrlSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onUpdated?: (newUrl: string) => void;
+  onUpdated?: (newUrl: string, healthy: boolean) => void;
 }
 
 export default function BaseUrlSettingsModal({ isOpen, onClose, onUpdated }: BaseUrlSettingsModalProps) {
-  const [currentUrl, setCurrentUrl] = useState<string>("https://linkkf.tv");
-  const [defaultUrl, setDefaultUrl] = useState<string>("https://linkkf.tv");
+  const [currentUrl, setCurrentUrl] = useState<string>("https://reanime.to");
+  const [defaultUrl, setDefaultUrl] = useState<string>("https://reanime.to");
   const [inputUrl, setInputUrl] = useState<string>("");
   const [isHealthy, setIsHealthy] = useState<boolean | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
@@ -32,9 +32,9 @@ export default function BaseUrlSettingsModal({ isOpen, onClose, onUpdated }: Bas
       const res = await fetch("/api/settings/base-url");
       const data = await res.json();
       if (data.success) {
-        setCurrentUrl(data.baseUrl || "https://linkkf.tv");
-        setDefaultUrl(data.defaultUrl || "https://linkkf.tv");
-        setInputUrl(data.baseUrl || "https://linkkf.tv");
+        setCurrentUrl(data.baseUrl || "https://reanime.to");
+        setDefaultUrl(data.defaultUrl || "https://reanime.to");
+        setInputUrl(data.baseUrl || "https://reanime.to");
         setIsHealthy(Boolean(data.isHealthy));
         setLatencyMs(data.latencyMs ?? null);
         setStatusText(data.statusText || null);
@@ -89,14 +89,15 @@ export default function BaseUrlSettingsModal({ isOpen, onClose, onUpdated }: Bas
 
       if (data.success) {
         setCurrentUrl(data.baseUrl);
-        setIsHealthy(data.health ? data.health.ok : true);
+        setInputUrl(data.baseUrl);
+        setIsHealthy(Boolean(data.health?.ok));
         setLatencyMs(data.health ? data.health.latencyMs : null);
         setStatusText(data.health ? data.health.statusText : null);
         setSuccessMessage("베이스 URL이 성공적으로 변경되었습니다.");
         setNeedsConfirmation(false);
         setConfirmMessage(null);
         if (onUpdated) {
-          onUpdated(data.baseUrl);
+          onUpdated(data.baseUrl, Boolean(data.health?.ok));
         }
       } else {
         setErrorMessage(data.message || "도메인 변경에 실패했습니다.");
@@ -120,8 +121,8 @@ export default function BaseUrlSettingsModal({ isOpen, onClose, onUpdated }: Bas
               <Globe className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="font-bold text-base sm:text-lg text-white">스트리밍 도메인(베이스 URL) 설정</h3>
-              <p className="text-xs text-slate-400">외부 애니 제공 사이트의 접속 도메인을 관리합니다.</p>
+              <h3 className="font-bold text-base sm:text-lg text-white">Reanime 도메인 설정</h3>
+              <p className="text-xs text-slate-400">Reanime API와 영상에 사용할 도메인을 관리합니다.</p>
             </div>
           </div>
           <button
@@ -137,7 +138,7 @@ export default function BaseUrlSettingsModal({ isOpen, onClose, onUpdated }: Bas
           {/* Current Status Box */}
           <div className="rounded-xl border border-slate-800 bg-slate-900/90 p-4">
             <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
-              <span>현재 연결 상태</span>
+              <span>현재 서버 연결 상태</span>
               <button
                 type="button"
                 onClick={fetchStatus}
@@ -172,7 +173,7 @@ export default function BaseUrlSettingsModal({ isOpen, onClose, onUpdated }: Bas
                 ) : isHealthy ? (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 text-xs font-medium text-emerald-400">
                     <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                    정상 연결 ({latencyMs}ms)
+                    서버 연결 정상 ({latencyMs}ms)
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-500/10 border border-rose-500/30 px-2.5 py-1 text-xs font-medium text-rose-400">
@@ -192,7 +193,7 @@ export default function BaseUrlSettingsModal({ isOpen, onClose, onUpdated }: Bas
           <div className="flex items-start gap-2.5 rounded-xl border border-indigo-500/20 bg-indigo-950/20 p-3 text-xs text-indigo-300">
             <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5 text-indigo-400" />
             <p>
-              인터넷 환경이나 통신사 DNS 차단으로 인해 기존 도메인 접속이 불가할 경우, 새롭게 우회된 최신 미러 도메인 주소를 입력하여 즉시 정상화할 수 있습니다.
+              Reanime 도메인만 입력해주세요. /api/v1/home 같은 경로는 자동으로 제거합니다. 서버 조회가 차단되면 목록·상세·재생 화면에서 브라우저로 재시도합니다. 외부 사이트의 차단이나 브라우저 정책에 따라 실패할 수 있습니다.
             </p>
           </div>
 
@@ -215,8 +216,8 @@ export default function BaseUrlSettingsModal({ isOpen, onClose, onUpdated }: Bas
               <input
                 type="text"
                 value={inputUrl}
-                onChange={(e) => setInputUrl(e.target.value)}
-                placeholder="https://linkkf.tv"
+                onChange={(e) => { setInputUrl(e.target.value); setNeedsConfirmation(false); }}
+                placeholder="https://reanime.to"
                 className="w-full rounded-xl border border-purple-500/30 bg-slate-900/90 px-4 py-2.5 font-mono text-sm text-slate-200 placeholder-slate-500 outline-none transition focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
               />
             </div>

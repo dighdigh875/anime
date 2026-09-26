@@ -90,7 +90,7 @@ export default function Navbar() {
           <button
             type="button"
             onClick={() => setIsSettingsOpen(true)}
-            title="스트리밍 도메인(베이스 URL) 설정"
+            title="Reanime 도메인 및 서버 연결 상태"
             className="relative flex h-8 w-8 items-center justify-center rounded-full border border-purple-500/30 bg-slate-900/80 text-slate-300 hover:text-white hover:border-purple-500/60 hover:bg-slate-800 transition"
           >
             <Globe className="h-4 w-4" />
@@ -144,8 +144,9 @@ export default function Navbar() {
       <BaseUrlSettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        onUpdated={() => {
-          setDomainStatus("healthy");
+        onUpdated={(_url, healthy) => {
+          setDomainStatus(healthy ? "healthy" : "unhealthy");
+          router.refresh();
         }}
       />
     </header>

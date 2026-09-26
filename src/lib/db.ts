@@ -1,3 +1,5 @@
+import { normalizeReanimeUrl, DEFAULT_REANIME_URL } from "./reanime-client";
+export { DEFAULT_REANIME_URL } from "./reanime-client";
 import { neon } from "@neondatabase/serverless";
 
 export function getDb() {
@@ -173,6 +175,45 @@ export async function initDb() {
       console.warn("[initDb login_attempts warning]:", e?.message);
     }
   }
+
+  // 9. ReAnime Subtitle & Sync Settings Table (독립 신설 테이블)
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS reanime_subtitle_settings (
+        id SERIAL PRIMARY KEY,
+        user_id VARCHAR(100) DEFAULT 'default',
+        anime_id VARCHAR(100) NOT NULL,
+        episode_number INT NOT NULL,
+        sync_offset REAL DEFAULT 0.0,
+        subtitle_name VARCHAR(100),
+        subtitle_url TEXT,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_reanime_sub_sync UNIQUE (user_id, anime_id, episode_number)
+      )
+    `;
+  } catch (e: any) {
+    if (e?.code !== "23505" && !e?.message?.includes("already exists")) {
+      console.warn("[initDb reanime_subtitle_settings warning]:", e?.message);
+    }
+  }
+
+  // Reanime's slug IDs can exceed the previous 100-character limit. Widen existing
+  // columns as well as fresh installations; never truncate or remap saved IDs.
+  await sql`
+    DO $$
+    DECLARE target RECORD;
+    BEGIN
+      FOR target IN
+        SELECT table_name, column_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND data_type = 'character varying'
+          AND ((column_name = 'anime_id' AND table_name IN
+            ('anime_history', 'anime_favorites', 'anime_skips', 'anime_themes', 'reanime_subtitle_settings'))
+            OR (table_name = 'reanime_subtitle_settings' AND column_name = 'subtitle_name'))
+      LOOP
+        EXECUTE format('ALTER TABLE %I ALTER COLUMN %I TYPE TEXT', target.table_name, target.column_name);
+      END LOOP;
+    END $$;
+  `;
 
   isInitialized = true;
 }
@@ -456,10 +497,10 @@ export async function getAnimeHistoryMap(
 // System Settings & Dynamic Base URL Helpers
 // ----------------------------------------------------
 
-export const DEFAULT_LINKKF_URL = "https://linkkf.tv";
+
 let cachedBaseUrl: { url: string; timestamp: number } | null = null;
 
-export async function getLinkkfBaseUrl(): Promise<string> {
+export async function getReanimeBaseUrl(): Promise<string> {
   if (cachedBaseUrl && Date.now() - cachedBaseUrl.timestamp < 30_000) {
     return cachedBaseUrl.url;
   }
@@ -470,42 +511,38 @@ export async function getLinkkfBaseUrl(): Promise<string> {
       await initDb();
       const rows = await sql`
         SELECT value FROM system_settings
-        WHERE key = 'linkkf_base_url'
+        WHERE key = 'reanime_base_url'
         LIMIT 1;
       `;
       if (rows.length > 0 && rows[0].value) {
-        const val = String(rows[0].value).trim().replace(/\/+$/, "");
+        const val = normalizeReanimeUrl(String(rows[0].value));
         if (val) {
           cachedBaseUrl = { url: val, timestamp: Date.now() };
           return val;
         }
       }
     } catch (e) {
-      console.warn("[getLinkkfBaseUrl error]:", e);
+      console.warn("[getReanimeBaseUrl error]:", e);
     }
   }
 
-  const envUrl = process.env.LINKKF_BASE_URL?.trim().replace(/\/+$/, "");
-  const finalUrl = envUrl || DEFAULT_LINKKF_URL;
+  const envUrl = process.env.REANIME_BASE_URL?.trim().replace(/\/+$/, "");
+  const finalUrl = normalizeReanimeUrl(envUrl || DEFAULT_REANIME_URL);
   cachedBaseUrl = { url: finalUrl, timestamp: Date.now() };
   return finalUrl;
 }
 
-export async function setLinkkfBaseUrl(newUrl: string): Promise<boolean> {
+export async function setReanimeBaseUrl(newUrl: string): Promise<boolean> {
   const sql = getDb();
   if (!sql) return false;
   await initDb();
 
-  let formatted = newUrl.trim();
-  if (!formatted.startsWith("http://") && !formatted.startsWith("https://")) {
-    formatted = `https://${formatted}`;
-  }
-  formatted = formatted.replace(/\/+$/, "");
+  const formatted = normalizeReanimeUrl(newUrl);
 
   try {
     await sql`
       INSERT INTO system_settings (key, value, updated_at)
-      VALUES ('linkkf_base_url', ${formatted}, CURRENT_TIMESTAMP)
+      VALUES ('reanime_base_url', ${formatted}, CURRENT_TIMESTAMP)
       ON CONFLICT (key) DO UPDATE SET
         value = EXCLUDED.value,
         updated_at = CURRENT_TIMESTAMP;
@@ -513,7 +550,7 @@ export async function setLinkkfBaseUrl(newUrl: string): Promise<boolean> {
     cachedBaseUrl = { url: formatted, timestamp: Date.now() };
     return true;
   } catch (e) {
-    console.error("[setLinkkfBaseUrl error]:", e);
+    console.error("[setReanimeBaseUrl error]:", e);
     return false;
   }
 }
@@ -623,5 +660,67 @@ export async function clearLoginFailures(userKey: string): Promise<void> {
     await sql`DELETE FROM login_attempts WHERE user_key = ${userKey}`;
   } catch (e) {
     console.error("[db.clearLoginFailures error]:", e);
+  }
+}
+
+export interface ReanimeSubtitleSetting {
+  sync_offset: number;
+  subtitle_name?: string | null;
+  subtitle_url?: string | null;
+}
+
+export async function getReanimeSubtitleSetting(
+  userId: string,
+  animeId: string,
+  episodeNumber: number
+): Promise<ReanimeSubtitleSetting | null> {
+  const sql = getDb();
+  if (!sql) return null;
+  await initDb();
+  try {
+    const rows = await sql`
+      SELECT sync_offset, subtitle_name, subtitle_url
+      FROM reanime_subtitle_settings
+      WHERE user_id = ${userId} AND anime_id = ${animeId} AND episode_number = ${episodeNumber}
+      LIMIT 1;
+    `;
+    if (rows.length === 0) return null;
+    return {
+      sync_offset: Number(rows[0].sync_offset) || 0.0,
+      subtitle_name: rows[0].subtitle_name || null,
+      subtitle_url: rows[0].subtitle_url || null,
+    };
+  } catch (e) {
+    console.error("[db.getReanimeSubtitleSetting error]:", e);
+    return null;
+  }
+}
+
+export async function setReanimeSubtitleSetting(
+  userId: string,
+  animeId: string,
+  episodeNumber: number,
+  syncOffset: number,
+  subtitleName?: string | null,
+  subtitleUrl?: string | null
+): Promise<boolean> {
+  const sql = getDb();
+  if (!sql) return false;
+  await initDb();
+  try {
+    await sql`
+      INSERT INTO reanime_subtitle_settings (user_id, anime_id, episode_number, sync_offset, subtitle_name, subtitle_url, updated_at)
+      VALUES (${userId}, ${animeId}, ${episodeNumber}, ${syncOffset}, ${subtitleName || null}, ${subtitleUrl || null}, CURRENT_TIMESTAMP)
+      ON CONFLICT (user_id, anime_id, episode_number)
+      DO UPDATE SET
+        sync_offset = EXCLUDED.sync_offset,
+        subtitle_name = COALESCE(EXCLUDED.subtitle_name, reanime_subtitle_settings.subtitle_name),
+        subtitle_url = COALESCE(EXCLUDED.subtitle_url, reanime_subtitle_settings.subtitle_url),
+        updated_at = CURRENT_TIMESTAMP;
+    `;
+    return true;
+  } catch (e) {
+    console.error("[db.setReanimeSubtitleSetting error]:", e);
+    return false;
   }
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAnimeDetail, getEpisodeStream } from "@/lib/linkkf";
+import { getAnimeDetail, getEpisodeStream } from "@/lib/reanime";
 import { getSessionUser } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
@@ -11,13 +11,14 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const animeId = searchParams.get("id")?.trim();
-  const epNum = parseInt(searchParams.get("ep") || "1", 10) || 1;
+  const epNum = Number(searchParams.get("ep") || "1");
   const isDub = searchParams.get("is_dub") === "1" || searchParams.get("is_dub") === "true";
 
   if (!animeId) {
     return NextResponse.json({ success: false, message: "Missing anime id" }, { status: 400 });
   }
 
+  try {
   const anime = await getAnimeDetail(animeId);
   if (!anime) {
     return NextResponse.json({ success: false, message: "Anime not found" }, { status: 404 });
@@ -27,7 +28,7 @@ export async function GET(request: NextRequest) {
 
   // 보안: 클라이언트에서 ?url= 로 임의 URL을 지정해 서버를 프록시/SSRF 수단으로 쓰는 것을 막기 위해
   // 스트림 URL은 항상 서버가 스크래핑한 회차 목록에서만 해석합니다.
-  const matched = epList.find((e) => e.number === epNum) || epList[0];
+  const matched = epList.find((e) => e.number === epNum);
   const watchUrl = matched?.watch_url || "";
 
   if (!watchUrl) {
@@ -70,6 +71,8 @@ export async function GET(request: NextRequest) {
   return NextResponse.json(
     {
       success: true,
+      stream_type: streamInfo.stream_type,
+      embed_url: streamInfo.embed_url,
       anime_id: animeId,
       anime_title: anime.title,
       episode_number: epNum,
@@ -90,8 +93,11 @@ export async function GET(request: NextRequest) {
       headers: {
         "Cache-Control": noCache
           ? "no-store"
-          : "public, s-maxage=1800, stale-while-revalidate=3600",
+          : "private, no-store",
       },
     }
   );
+  } catch {
+    return NextResponse.json({success:false,message:"Reanime 영상 연결 실패",browserRetry:true},{status:502});
+  }
 }
