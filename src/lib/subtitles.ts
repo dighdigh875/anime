@@ -1,6 +1,31 @@
+import { convertToVtt } from './subtitle-format';
+export { convertToVtt } from './subtitle-format';
 import * as cheerio from "cheerio";
 import iconv from "iconv-lite";
 import AdmZip from "adm-zip";
+import { validateKoreanSubtitle, type SubtitleSearchResult } from './korean-playback';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { assertSafeProxyUrl } from './proxyGuard';
+
+const subtitleRequestContext = new AsyncLocalStorage<AbortSignal>();
+
+async function subtitleFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const deadline = subtitleRequestContext.getStore();
+  const signals = [init.signal, deadline].filter((s): s is AbortSignal => Boolean(s));
+  const signal = signals.length ? AbortSignal.any(signals) : AbortSignal.timeout(5000);
+  let target = url;
+  for (let redirects = 0; redirects < 5; redirects++) {
+    signal.throwIfAborted();
+    await assertSafeProxyUrl(target);
+    const response = await fetch(target, {...init, signal, redirect: 'manual'});
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get('location');
+    await response.body?.cancel();
+    if (!location) throw new Error('Missing redirect location');
+    target = new URL(location, target).href;
+  }
+  throw new Error('Too many subtitle redirects');
+}
 
 export const HEADERS: Record<string, string> = {
   "User-Agent":
@@ -31,8 +56,10 @@ export interface CreatorInfo {
 // 1. Title cleaner
 export function cleanTitle(text: string): string {
   if (!text) return "";
-  let t = text.replace(/\[.*?\]|\(.*?\)|【.*?】|<.*?>|~.*?~/g, " ");
-  t = t.replace(/[^\w\s가-힣a-zA-Z0-9]/g, " ");
+  let t = text.replace(/\[.*?\]|\(.*?\)|【.*?】|<.*?>/g, " ");
+  t = t.replace(/\bBD\b/gi, " ");
+  t = t.replace(/\s+\d+화(?:\s|$)/g, " ");
+  t = t.replace(/[^\w\s가-힣a-zA-Z0-9~-]/g, " ");
   return t.replace(/\s+/g, " ").trim();
 }
 
@@ -41,15 +68,38 @@ export function safeFilename(text: string): string {
   return text.replace(/[^a-zA-Z0-9가-힣_-]/g, "_").replace(/^_+|_+$/g, "");
 }
 
-// 3. Season parser
+// 3. Season parser (로마 숫자 I~VI, 유니코드 Ⅰ~Ⅵ, Part/파트, 기수 등 완벽 지원)
 export function parseSeason(text: string): number | null {
   if (!text) return null;
-  const m = text.match(/(\d+)\s*기|\b(\d+)(?:st|nd|rd|th)\b|season\s*(\d+)|\bs(\d+)\b/i);
+
+  // 1) 유니코드 로마 숫자 (Ⅰ~Ⅹ)
+  if (/Ⅹ/i.test(text)) return 10;
+  if (/Ⅸ/i.test(text)) return 9;
+  if (/Ⅷ/i.test(text)) return 8;
+  if (/Ⅶ/i.test(text)) return 7;
+  if (/Ⅵ/i.test(text)) return 6;
+  if (/Ⅴ/i.test(text)) return 5;
+  if (/Ⅳ/i.test(text)) return 4;
+  if (/Ⅲ/i.test(text)) return 3;
+  if (/Ⅱ/i.test(text)) return 2;
+  if (/Ⅰ/i.test(text)) return 1;
+
+  // 2) 단어 단위 아스키 로마 숫자 (VI, IV, III, II)
+  if (/\bVI\b/i.test(text)) return 6;
+  if (/\bV\b/i.test(text)) return 5;
+  if (/\bIV\b/i.test(text)) return 4;
+  if (/\bIII\b/i.test(text)) return 3;
+  if (/\bII\b/i.test(text)) return 2;
+
+  // 3) 파트 / Part / 시즌 / 기
+  const m = text.match(/(\d+)\s*기|\b(\d+)(?:st|nd|rd|th)\b|season\s*(\d+)|\bs(\d+)\b|파트\s*(\d+)|part\s*(\d+)/i);
   if (m) {
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= 6; i++) {
       if (m[i]) return parseInt(m[i], 10);
     }
   }
+
+  // 4) 한글/영문 바로 뒤 숫자 (예: 신의탑2)
   const m2 = text.match(/(?<=[가-힣a-zA-Z])([2-9])(?=\s|$|[^\w가-힣])/);
   if (m2) {
     return parseInt(m2[1], 10);
@@ -60,51 +110,26 @@ export function parseSeason(text: string): number | null {
 // 4. Episode numbers parser
 export function parseEpisodes(text: string): number[] {
   if (!text) return [];
-  const base = text.split(/[\\/]/).pop() || text;
-  const eps = new Set<number>();
-
-  // Range patterns: 1-12, 1~12, 01~12화
-  const rangeRegex = /(?:^|[^\d])0*(\d{1,3})\s*(?:~|-|_|\.\.|to)\s*0*(\d{1,3})\s*(?:화|편|ep|e|#)?/gi;
-  let match: RegExpExecArray | null;
-  while ((match = rangeRegex.exec(base)) !== null) {
-    const s = parseInt(match[1], 10);
-    const e = parseInt(match[2], 10);
-    if (s >= 1 && s < e && e <= 150 && e - s <= 100) {
-      if (![720, 1080, 480].includes(s) && ![720, 1080, 480].includes(e)) {
-        for (let i = s; i <= e; i++) eps.add(i);
-      }
+  let base = text.split(/[\\/]/).pop() || text;
+  try {base = decodeURIComponent(base);} catch {}
+  base = base.replace(/\d+\s*기|season\s*\d+|\b\d+(?:st|nd|rd|th)\b/gi, ' ');
+  const episodes = new Set<number>();
+  // Prefer explicit episode markers; a season number is never an episode.
+  for (const m of base.matchAll(/(?:^|[^\d.])(\d{1,4}(?:\.\d)?)\s*(?:화|편)/g)) episodes.add(Number(m[1]));
+  for (const m of base.matchAll(/(?:\bs\d+)?(?:episode|ep|\be|(?<=\d)e|#)\s*0*(\d{1,4}(?:\.\d)?)(?!\d)/gi)) episodes.add(Number(m[1]));
+  base = base.replace(/\bs\d+\b/gi, ' ');
+  for (const m of base.matchAll(/(?:^|[^\d])(\d{1,4})\s*(?:~|-|_|\.\.|to)\s*(\d{1,4})(?!\d)/gi)) {
+    const start = Number(m[1]), end = Number(m[2]);
+    if (start >= 0 && end > start && end - start <= 2000 && end < 10000) {
+      for (let i=start;i<=end;i++) episodes.add(i);
     }
   }
-
-  // Explicit units: 01화, 1편, ep2, #3
-  const explicitRegex = /(?:^|[^\d])0*(\d{1,3})\s*(?:화|편|ep|e|#)/gi;
-  while ((match = explicitRegex.exec(base)) !== null) {
-    const val = parseInt(match[1], 10);
-    if (val >= 1 && val <= 200) eps.add(val);
+  if (episodes.size) return [...episodes].sort((a,b) => a-b);
+  for (const m of base.matchAll(/(?<![\p{L}\p{N}])(\d{1,4}(?:\.\d)?)(?![\p{L}\p{N}])/gu)) {
+    const n = Number(m[1]);
+    if (![360,480,720,1080,2160].includes(n) && !(n >= 1900 && n <= 2100)) episodes.add(n);
   }
-
-  // Fallback: standalone numbers after removing season tokens
-  if (eps.size === 0) {
-    let clean = base.replace(/\b\d+(?:st|nd|rd|th)\b/gi, " ");
-    clean = clean.replace(/\b\d+\s*기\b/g, " ");
-    clean = clean.replace(/season\s*\d+/gi, " ");
-    clean = clean.replace(/\bs\d+\b/gi, " ");
-    clean = clean.replace(/(?<=[가-힣a-zA-Z])\d(?=\s|$|\.|\-|_)/g, " ");
-
-    const numRegex = /(?:^|[^\d])0*(\d{1,3})(?:[^\d]|$)/g;
-    while ((match = numRegex.exec(clean)) !== null) {
-      const val = parseInt(match[1], 10);
-      if (
-        ![720, 1080, 480, 2020, 2021, 2022, 2023, 2024, 2025, 2026].includes(val) &&
-        val >= 1 &&
-        val <= 200
-      ) {
-        eps.add(val);
-      }
-    }
-  }
-
-  return Array.from(eps).sort((a, b) => a - b);
+  return [...episodes].sort((a,b) => a-b);
 }
 
 // 5. Decode text buffer with encoding fallback (UTF-8, UTF-16, CP949, EUC-KR)
@@ -125,7 +150,7 @@ export function decodeSubtitleBuffer(buf: Buffer): string {
 
   for (const enc of ["utf-8", "cp949", "euc-kr", "utf-16"]) {
     try {
-      const s = iconv.decode(buf, enc);
+      const s = enc === 'utf-8' ? new TextDecoder('utf-8', {fatal: true}).decode(buf) : iconv.decode(buf, enc);
       if (
         s.toLowerCase().includes("<sync") ||
         s.toLowerCase().includes("<sami") ||
@@ -139,63 +164,6 @@ export function decodeSubtitleBuffer(buf: Buffer): string {
 
   // Fallback UTF-8
   return buf.toString("utf-8");
-}
-
-function msToTime(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const remMs = ms % 1000;
-  const s = totalSec % 60;
-  const totalMin = Math.floor(totalSec / 60);
-  const m = totalMin % 60;
-  const h = Math.floor(totalMin / 60);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(remMs).padStart(3, "0")}`;
-}
-
-// 6. SMI/SRT to WebVTT converter
-export function convertToVtt(rawText: string, origExt: string): { content: string; ext: string } {
-  const lowerExt = origExt.toLowerCase();
-  if (lowerExt === ".ass" || lowerExt === ".ssa") {
-    return { content: rawText, ext: ".ass" };
-  }
-
-  const lowerText = rawText.toLowerCase();
-
-  // SAMI (.smi) Parser
-  if (lowerExt === ".smi" || lowerText.includes("<sync") || lowerText.includes("<sami")) {
-    const matches: Array<{ startMs: number; text: string }> = [];
-    const syncRegex = /<SYNC\s+Start=(\d+)>(?:<P[^>]*>)?([\s\S]*?)(?=<SYNC|\Z)/gi;
-    let m: RegExpExecArray | null;
-
-    while ((m = syncRegex.exec(rawText)) !== null) {
-      const startMs = parseInt(m[1], 10);
-      let clean = m[2].replace(/<br\s*\/?>/gi, "\n");
-      clean = clean.replace(/<(?!(\/)?(?:font|i|b|u)\b)[^>]+>/gi, "").trim();
-      clean = clean.replace(/&nbsp;/gi, " ").trim();
-      if (clean && clean.toLowerCase() !== "&nbsp;") {
-        matches.push({ startMs, text: clean });
-      }
-    }
-
-    if (matches.length > 0) {
-      const lines = ["WEBVTT", ""];
-      for (let i = 0; i < matches.length; i++) {
-        const item = matches[i];
-        const endMs = i + 1 < matches.length ? matches[i + 1].startMs : item.startMs + 3000;
-        lines.push(`${msToTime(item.startMs)} --> ${msToTime(endMs)}`);
-        lines.push(item.text);
-        lines.push("");
-      }
-      return { content: lines.join("\n"), ext: ".vtt" };
-    }
-  }
-
-  // SRT Parser
-  if (lowerExt === ".srt" || rawText.includes("-->")) {
-    const vtt = "WEBVTT\n\n" + rawText.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
-    return { content: vtt, ext: ".vtt" };
-  }
-
-  return { content: rawText, ext: origExt };
 }
 
 // 7. In-memory ZIP extractor & subtitle reader
@@ -265,12 +233,13 @@ export function extractSubtitleFromBuffer(
         candidates.sort((a, b) => a.priority - b.priority);
         matchedEntry = candidates[0].entry;
         matchedDecName = candidates[0].decName;
-      } else if (subEntries.length === 1) {
+      } else if (subEntries.length === 1 && parseEpisodes(subEntries[0].entryName).length === 0) {
         matchedEntry = subEntries[0];
         matchedDecName = matchedEntry.name;
       }
 
       if (matchedEntry) {
+        if (matchedEntry.header.size > 4_000_000) return null;
         const rawBuf = matchedEntry.getData();
         const rawText = decodeSubtitleBuffer(rawBuf);
         const origExt = "." + (matchedEntry.name.split(".").pop() || "").toLowerCase();
@@ -289,6 +258,12 @@ export function extractSubtitleFromBuffer(
       console.error("[Zip Extractor error]:", e);
     }
   } else {
+    let attachmentName = '';
+    try {attachmentName = decodeURIComponent(new URL(urlPath).pathname.split('/').pop() || '');} catch {}
+    if (/\.(?:ass|ssa|srt|smi|vtt)$/i.test(attachmentName)) {
+      const namedEpisodes = parseEpisodes(attachmentName);
+      if (namedEpisodes.length && !namedEpisodes.includes(episodeNumber)) return null;
+    }
     const rawText = decodeSubtitleBuffer(buffer);
     const textLower = rawText.slice(0, 500).toLowerCase();
 
@@ -306,7 +281,7 @@ export function extractSubtitleFromBuffer(
     const isSrt = /^\s*\d+\s*[\r\n]+\d{2}:\d{2}/.test(rawText.slice(0, 100)) || rawText.includes("-->");
 
     if (isAss || isSmi || isSrt) {
-      const origExt = isAss ? ".ass" : isSmi ? ".smi" : ".srt";
+      const origExt = isAss ? ".ass" : isSmi ? ".smi" : /^\uFEFF?WEBVTT\b/.test(rawText) ? ".vtt" : ".srt";
       const { content, ext } = convertToVtt(rawText, origExt);
       const isAssResult = ext === ".ass" || ext === ".ssa";
       let displayFn = urlPath.split("/").pop() || `subtitle${origExt}`;
@@ -351,7 +326,7 @@ export async function downloadFileWithTimeout(
 
     const directUrl = convertToDirectDownloadUrl(url);
 
-    let res = await fetch(directUrl, {
+    let res = await subtitleFetch(directUrl, {
       headers,
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -362,7 +337,7 @@ export async function downloadFileWithTimeout(
         /(?:drive\.google\.com\/(?:file\/d\/|open\?id=)|docs\.google\.com\/uc\?id=)([a-zA-Z0-9_-]{25,})/
       );
       if (driveMatch && driveMatch[1]) {
-        res = await fetch(
+        res = await subtitleFetch(
           `https://docs.google.com/uc?export=download&id=${driveMatch[1]}&confirm=t`,
           {
             headers,
@@ -425,7 +400,7 @@ export async function findKairanSubtitle(
 
     for (const q of queries) {
       const searchUrl = `https://kairan03.blogspot.com/search?q=${encodeURIComponent(q)}`;
-      const res = await fetch(searchUrl, {
+      const res = await subtitleFetch(searchUrl, {
         headers: HEADERS,
         signal: AbortSignal.timeout(timeoutMs),
       });
@@ -459,7 +434,7 @@ export async function findKairanSubtitle(
 
       if (matchedPostUrl) {
         // Download post page to find attachment link
-        const postRes = await fetch(matchedPostUrl, {
+        const postRes = await subtitleFetch(matchedPostUrl, {
           headers: HEADERS,
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -519,7 +494,7 @@ export async function findKairanSubtitle(
       }
     }
   } catch (e) {
-    console.error("[Kairan Subtitle] error:", e);
+    if (!subtitleRequestContext.getStore()?.aborted) console.error("[Kairan Subtitle] error:", e);
   }
   return null;
 }
@@ -557,7 +532,7 @@ export async function searchBlogForEpisode(
     if (domain.includes("blogspot.com")) {
       for (const q of queries) {
         const searchUrl = `https://${domain}/search?q=${encodeURIComponent(q)}`;
-        const res = await fetch(searchUrl, {
+        const res = await subtitleFetch(searchUrl, {
           headers: HEADERS,
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -592,7 +567,7 @@ export async function searchBlogForEpisode(
     else if (domain.includes("tistory.com")) {
       for (const q of queries) {
         const searchUrl = `https://${domain}/search/${encodeURIComponent(q)}`;
-        const res = await fetch(searchUrl, {
+        const res = await subtitleFetch(searchUrl, {
           headers: HEADERS,
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -630,7 +605,7 @@ export async function searchBlogForEpisode(
         const blogId = m[1];
         for (const q of queries.slice(0, 2)) {
           const searchUrl = `https://blog.naver.com/PostSearchList.naver?blogId=${blogId}&searchText=${encodeURIComponent(q)}`;
-          const res = await fetch(searchUrl, {
+          const res = await subtitleFetch(searchUrl, {
             headers: HEADERS,
             signal: AbortSignal.timeout(timeoutMs),
           });
@@ -697,7 +672,7 @@ export async function fetchCreatorSubtitle(
           reqHeaders["Referer"] = "https://blog.naver.com/";
         }
 
-        const res = await fetch(postUrl, {
+        const res = await subtitleFetch(postUrl, {
           headers: reqHeaders,
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -830,7 +805,7 @@ export async function fetchCreatorSubtitle(
     // 🌟 1단계: 초기 등록 링크(website) 자체가 해당 회차 글인지 먼저 확인 (jcore 방식)
     let isInitialUrlCurrentEp = false;
     try {
-      const initRes = await fetch(website, {
+      const initRes = await subtitleFetch(website, {
         headers: HEADERS,
         signal: AbortSignal.timeout(4000),
       });
@@ -839,7 +814,7 @@ export async function fetchCreatorSubtitle(
         const $init = cheerio.load(initHtml);
         const pageTitle = $init("title").text().trim() || "";
         const pSeason = parseSeason(`${pageTitle} ${website}`);
-        const pEps = parseEpisodes(`${pageTitle} ${website}`);
+        const pEps = parseEpisodes(pageTitle);
 
         const seasonOk = (targetSeason === null || pSeason === null || targetSeason === pSeason);
         if (seasonOk && pEps.includes(episodeNumber)) {
@@ -860,12 +835,161 @@ export async function fetchCreatorSubtitle(
       if (searchExtracted) return searchExtracted;
     }
   } catch (e) {
-    console.error(`[fetchCreatorSubtitle error] ${creatorName}:`, e);
+    if (!subtitleRequestContext.getStore()?.aborted) console.error(`[fetchCreatorSubtitle error] ${creatorName}:`, e);
   }
   return null;
 }
 
-// 12. Anissia API query for subtitle creators
+// 12-1. Generate smart search queries for Anissia (다단계 스마트 검색어 생성)
+export function generateAnissiaSearchQueries(rawTitle: string): string[] {
+  const queries = new Set<string>();
+  if (!rawTitle) return [];
+
+  let t = rawTitle;
+  // 1) 괄호류 태그 제거 ([BD], (더빙) 등)
+  t = t.replace(/\[.*?\]|\(.*?\)|【.*?】|<.*?>/g, " ");
+  // 2) 끝에 붙은 "1130화", "1화" 등 회차 제거
+  t = t.replace(/\s+\d+화(?:\s|$)/g, " ");
+  // 3) BD, Rip, 더빙, 자막 제거
+  t = t.replace(/\b(BD|Rip|더빙|자막)\b/gi, " ");
+
+  // 한글 부분 추출 (영문 부제 분리: 예 "뫼비우스 더스트 Mebius Dust" -> "뫼비우스 더스트")
+  let korOnly = "";
+  const matchKor = t.match(/[가-힣0-9\s~:-]+/g);
+  if (matchKor) {
+    korOnly = matchKor.join(" ").replace(/\s+/g, " ").trim();
+  }
+
+  // 시즌/기수 제거
+  const removeSeason = (str: string) => {
+    return str
+      .replace(/\s*\d+\s*기\b/g, "")
+      .replace(/season\s*\d+/gi, "")
+      .replace(/\b\d+(?:st|nd|rd|th)\b/gi, "")
+      .replace(/\s+[ⅠⅡⅢⅣⅤⅥII|III|IV|V|VI]\b/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+
+  // 구분자(~, -, :, 「, 『) 앞의 대표명사 추출
+  const getMainBeforeSeparator = (str: string) => {
+    for (const sep of ["~", "-", ":", "「", "『"]) {
+      if (str.includes(sep) && !str.startsWith(sep)) {
+        return str.split(sep)[0].trim();
+      }
+    }
+    return "";
+  };
+
+  const addCandidates = (base: string) => {
+    if (!base) return;
+    const cleaned = base.replace(/[^\w\s가-힣a-zA-Z0-9]/g, " ").replace(/\s+/g, " ").trim();
+    if (cleaned.length >= 2) {
+      queries.add(cleaned);
+
+      // 띄어쓰기 변형 (공백 없는 4글자 이상 한글: 예 "무직전생" -> "무직 전생")
+      if (!cleaned.includes(" ") && cleaned.length >= 4) {
+        queries.add(cleaned.slice(0, 2) + " " + cleaned.slice(2));
+      }
+
+      // 첫 1~2단어 (불용어 제외)
+      const words = cleaned.split(/\s+/).filter((w) => !["시즌", "더빙", "자막", "극장판", "애니", "1기", "2기", "3기", "4기", "5기"].includes(w));
+      if (words.length >= 1 && words[0].length >= 2) {
+        queries.add(words[0]);
+      }
+      if (words.length >= 2) {
+        queries.add(`${words[0]} ${words[1]}`);
+      }
+    }
+  };
+
+  const mainSep = getMainBeforeSeparator(t);
+  if (mainSep) {
+    addCandidates(removeSeason(mainSep));
+    addCandidates(mainSep);
+  }
+
+  if (korOnly) {
+    addCandidates(removeSeason(korOnly));
+    addCandidates(korOnly);
+  }
+
+  const baseCleaned = removeSeason(t);
+  addCandidates(baseCleaned);
+  addCandidates(t);
+
+  return Array.from(queries).filter((q) => q.length >= 2);
+}
+
+// 12-2. Anime Match Scorer (가중치 기반 최적 작품 매칭기 - 오매칭 원천 차단)
+export function scoreAnimeMatch(
+  rawTitle: string,
+  targetSeason: number | null,
+  item: { animeNo: number; subject: string }
+): number {
+  const itemSubject = item.subject || "";
+  const itemSeason = parseSeason(itemSubject);
+
+  let score = 0;
+
+  // 1) 제목 완전 일치 또는 상호 포함 여부
+  const cleanRaw = rawTitle.replace(/[^\w가-힣0-9]/g, "").toLowerCase();
+  const cleanItem = itemSubject.replace(/[^\w가-힣0-9]/g, "").toLowerCase();
+
+  if (cleanRaw === cleanItem) {
+    score += 150;
+  } else if (cleanItem.includes(cleanRaw) || cleanRaw.includes(cleanItem)) {
+    score += 80;
+  }
+
+  // 2) 시즌 일치 점수
+  if (targetSeason === null) {
+    // 1기이거나 단편인 경우
+    if (itemSeason === null || itemSeason === 1) {
+      score += 40;
+    } else {
+      // 대상이 2기, 3기 등 후속작이면 큰 감점
+      score -= 60;
+    }
+  } else {
+    // 특정 시즌(2기 이상)인 경우
+    if (itemSeason === targetSeason) {
+      score += 60;
+    } else if (itemSeason === null) {
+      score -= 20;
+    } else {
+      // 시즌이 완전히 다른 경우 대폭 감점 (예: 2기 찾는데 5기)
+      score -= 100;
+    }
+  }
+
+  // 3) 극장판 / 외전 패널티
+  const isTargetMovie = /극장판|movie/i.test(rawTitle);
+  const isItemMovie = /극장판|movie/i.test(itemSubject);
+  if (isTargetMovie && isItemMovie) {
+    score += 40;
+  } else if (!isTargetMovie && isItemMovie) {
+    score -= 40; // TV 시리즈 찾는데 극장판이면 감점
+  }
+
+  const isTargetSpinOff = /외전|팬레터|스페셜|멍!/i.test(rawTitle);
+  const isItemSpinOff = /외전|팬레터|스페셜|멍!/i.test(itemSubject);
+  if (!isTargetSpinOff && isItemSpinOff) {
+    score -= 50; // 본편 찾는데 스핀오프면 감점
+  }
+
+  // 4) 단어 오버랩 점수
+  const rawWords = rawTitle.split(/\s+/).filter((w) => w.length >= 2);
+  let overlapWords = 0;
+  for (const w of rawWords) {
+    if (itemSubject.includes(w)) overlapWords++;
+  }
+  score += overlapWords * 15;
+
+  return score;
+}
+
+// 12-3. Anissia API query for subtitle creators with smart multi-stage search
 export async function getAnissiaCreators(
   title: string,
   episodeNumber: number,
@@ -873,94 +997,71 @@ export async function getAnissiaCreators(
 ): Promise<CreatorInfo[]> {
   const results: CreatorInfo[] = [];
   try {
-    const cleanFull = cleanTitle(title);
-    const korPart = title.replace(/[a-zA-Z].*$/, "").trim();
-    const cleanKor = cleanTitle(korPart);
-    const query = cleanKor && cleanKor.length >= 2 ? cleanKor : cleanFull;
+    const targetSeason = parseSeason(title);
+    const queries = generateAnissiaSearchQueries(title);
 
-    const url = `https://api.anissia.net/anime/list/0?q=${encodeURIComponent(query)}`;
-    const res = await fetch(url, {
+    let bestAnime: { animeNo: number; subject: string } | null = null;
+    let bestScore = 0;
+
+    // 최대 4개의 스마트 쿼리를 순차/조기종료 방식으로 검색
+    for (const q of queries.slice(0, 4)) {
+      try {
+        const url = `https://api.anissia.net/anime/list/0?q=${encodeURIComponent(q)}`;
+        const res = await subtitleFetch(url, {
+          headers: HEADERS,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+
+        if (!res.ok) continue;
+        const json = await res.json();
+        const content: Array<{ animeNo: number; subject: string }> = json?.data?.content || [];
+        if (content.length === 0) continue;
+
+        for (const item of content) {
+          const sc = scoreAnimeMatch(title, targetSeason, item);
+          if (sc > bestScore) {
+            bestScore = sc;
+            bestAnime = item;
+          }
+        }
+
+        // 높은 신뢰도(120점 이상)인 경우 추가 쿼리 검색 생략
+        if (bestScore >= 120) {
+          break;
+        }
+      } catch {}
+    }
+
+    // 신뢰도 점수가 50점 미만이면 오매칭(다른 작품 자막) 방지를 위해 제외
+    if (!bestAnime || bestScore < 50) {
+      return results;
+    }
+
+    const capUrl = `https://api.anissia.net/anime/caption/animeNo/${bestAnime.animeNo}`;
+    const capRes = await subtitleFetch(capUrl, {
       headers: HEADERS,
       signal: AbortSignal.timeout(timeoutMs),
     });
 
-    let content: Array<{ animeNo: number; subject: string }> = [];
-    if (res.ok) {
-      const json = await res.json();
-      content = json?.data?.content || [];
-    }
+    if (capRes.ok) {
+      const capJson = await capRes.json();
+      const captions = capJson?.data || [];
+      const seenNames = new Set<string>();
 
-    const targetSeason = parseSeason(title);
-    let matchedAnime: { animeNo: number; subject: string } | null = null;
+      for (const c of captions) {
+        const name = (c.name || "제작자").trim();
+        if (seenNames.has(name)) continue;
+        seenNames.add(name);
 
-    for (const item of content) {
-      const itemSeason = parseSeason(item.subject);
-      if (targetSeason === null && (itemSeason === null || itemSeason === 1)) {
-        matchedAnime = item;
-        break;
-      }
-      if (targetSeason !== null && itemSeason === targetSeason) {
-        matchedAnime = item;
-        break;
-      }
-    }
-    if (!matchedAnime && content.length > 0) {
-      matchedAnime = content[0];
-    }
-
-    // Fallback: 단어 분리 검색
-    if (!matchedAnime) {
-      const words = query
-        .split(/\s+/)
-        .filter((w) => !["시즌", "더빙", "자막", "극장판", "애니", "1기", "2기", "3기", "4기", "5기"].includes(w));
-      const fallbackQuery = words.length >= 2 ? words.slice(0, 2).join(" ") : words[0] || "";
-      if (fallbackQuery && fallbackQuery !== query) {
-        const url2 = `https://api.anissia.net/anime/list/0?q=${encodeURIComponent(fallbackQuery)}`;
-        const res2 = await fetch(url2, {
-          headers: HEADERS,
-          signal: AbortSignal.timeout(timeoutMs),
+        const epStr = String(c.episode ?? "");
+        const isCurrent = epStr.trim() !== '' && Number(epStr) === episodeNumber;
+        results.push({
+          name,
+          episode: epStr,
+          update_date: (c.updDt || "").replace("T", " ").slice(0, 16),
+          website: (c.website || "").trim(),
+          is_current_ep: isCurrent,
         });
-        if (res2.ok) {
-          const json2 = await res2.json();
-          const c2 = json2?.data?.content || [];
-          for (const item of c2) {
-            const subj = item.subject || "";
-            if (words.some((w) => w.length >= 2 && subj.includes(w))) {
-              matchedAnime = item;
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    if (matchedAnime && matchedAnime.animeNo) {
-      const capUrl = `https://api.anissia.net/anime/caption/animeNo/${matchedAnime.animeNo}`;
-      const capRes = await fetch(capUrl, {
-        headers: HEADERS,
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-
-      if (capRes.ok) {
-        const capJson = await capRes.json();
-        const captions = capJson?.data || [];
-        const seenNames = new Set<string>();
-
-        for (const c of captions) {
-          const name = (c.name || "제작자").trim();
-          if (seenNames.has(name)) continue;
-          seenNames.add(name);
-
-          const epStr = String(c.episode || "");
-          const isCurrent = epStr.includes(String(episodeNumber));
-          results.push({
-            name,
-            episode: epStr,
-            update_date: (c.updDt || "").replace("T", " ").slice(0, 16),
-            website: (c.website || "").trim(),
-            is_current_ep: isCurrent,
-          });
-        }
       }
     }
   } catch (e) {
@@ -969,66 +1070,58 @@ export async function getAnissiaCreators(
   return results;
 }
 
-// 13. High-level parallel searcher with 13-Second Safety Guard
+export async function getAnissiaCreatorsById(animeNo: number, episodeNumber: number): Promise<CreatorInfo[]> {
+  const response = await subtitleFetch(`https://api.anissia.net/anime/caption/animeNo/${animeNo}`, {
+    headers: HEADERS, signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error('Caption lookup failed');
+  const json = await response.json();
+  const captions = json.data ?? json;
+  if (!Array.isArray(captions)) throw new Error('Invalid caption response');
+  return captions.map((c: any) => ({
+    name: String(c.name || '제작자'), episode: String(c.episode ?? ''),
+    update_date: String(c.updDt || '').replace('T', ' ').slice(0, 16),
+    website: String(c.website || '').trim(),
+    is_current_ep: String(c.episode ?? '').trim() !== '' && Number(c.episode) === episodeNumber,
+  }));
+}
+
+// Keep completed work on timeout, and cancel outstanding upstream requests.
 export async function searchAllSubtitlesParallel(
   title: string,
   episodeNumber: number,
-  maxTotalTimeMs = 13000
-): Promise<{ subtitles: SubtitleResult[]; creators: CreatorInfo[] }> {
-  // Create an overall timeout promise that resolves at 13 seconds
-  let timeoutHandle: NodeJS.Timeout;
-  const timeoutPromise = new Promise<null>((resolve) => {
-    timeoutHandle = setTimeout(() => resolve(null), maxTotalTimeMs);
+  maxTotalTimeMs = 13000,
+  animeNo?: number,
+): Promise<SubtitleSearchResult> {
+  const controller = new AbortController();
+  const subtitles: SubtitleResult[] = [];
+  let creators: CreatorInfo[] = [];
+  let lookupFailed = false;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<void>(resolve => {
+    timer = setTimeout(() => { timedOut = true; controller.abort(); resolve(); }, maxTotalTimeMs);
   });
-
-  const workerPromise = (async () => {
-    // 1. Fetch Anissia creators and Kairan search concurrently
-    const [anissiaCreators, kairanSub] = await Promise.all([
-      getAnissiaCreators(title, episodeNumber, 3500),
-      findKairanSubtitle(title, episodeNumber, 3500),
-    ]);
-
-    const collectedSubs: SubtitleResult[] = [];
-    if (kairanSub) {
-      collectedSubs.push(kairanSub);
-    }
-
-    // 2. Filter valid creators who have an active blog for this episode
-    const candidateCreators = anissiaCreators.filter(
-      (c) => c.website && c.website.startsWith("http")
-    );
-
-    // Limit to top 4 creators to avoid excessive concurrency
-    const topCreators = candidateCreators.slice(0, 4);
-
-    // 3. Parallel fetch creator subtitles with individual 3.5s timeouts
-    const creatorSubPromises = topCreators.map((c) =>
-      fetchCreatorSubtitle(c.name, c.website, title, episodeNumber, 3500)
-    );
-
-    const settled = await Promise.allSettled(creatorSubPromises);
-    for (const s of settled) {
-      if (s.status === "fulfilled" && s.value) {
-        collectedSubs.push(s.value);
-      }
-    }
-
-    return {
-      subtitles: collectedSubs,
-      creators: anissiaCreators,
-    };
-  })();
-
-  try {
-    const winner = await Promise.race([workerPromise, timeoutPromise]);
-    clearTimeout(timeoutHandle!);
-    if (winner) {
-      return winner;
-    }
-    // If timed out at 13s, return whatever is empty or basic fallback safely
-    return { subtitles: [], creators: [] };
-  } catch {
-    clearTimeout(timeoutHandle!);
-    return { subtitles: [], creators: [] };
-  }
+  const collect = (sub: SubtitleResult | null) => {
+    if (!controller.signal.aborted && sub && validateKoreanSubtitle(sub) && !subtitles.some(s => s.name === sub.name)) subtitles.push(sub);
+  };
+  const work = subtitleRequestContext.run(controller.signal, async () => {
+    // The title is already Korean in the Anissia-first flow. ID lookup avoids fuzzy rematching.
+    const creatorWork = (async () => {
+      try {
+        creators = animeNo ? await getAnissiaCreatorsById(animeNo, episodeNumber) : await getAnissiaCreators(title, episodeNumber);
+        const candidates = creators.filter(c => /^https?:\/\//.test(c.website))
+          .sort((a, b) => Number(b.is_current_ep) - Number(a.is_current_ep)).slice(0, 4);
+        await Promise.allSettled(candidates.map(async c => collect(await fetchCreatorSubtitle(c.name, c.website, title, episodeNumber, 4000))));
+      } catch { lookupFailed = true; }
+    })();
+    const fallbackWork = findKairanSubtitle(title, episodeNumber, 4000).then(collect);
+    await Promise.allSettled([creatorWork, fallbackWork]);
+  });
+  try { await Promise.race([work, deadline]); }
+  finally { clearTimeout(timer!); controller.abort(); }
+  return {
+    subtitles: [...subtitles], creators: [...creators],
+    status: subtitles.length ? 'ready' : timedOut ? 'timeout' : lookupFailed ? 'error' : 'not_found',
+  };
 }

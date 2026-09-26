@@ -43,6 +43,7 @@ export async function GET(request: NextRequest) {
         count: validSubtitles.length,
         subtitles: validSubtitles,
         creators: result.creators,
+        status: result.status,
       },
       {
         status: 200,

@@ -18,6 +18,8 @@ import {
   Settings,
   ArrowRight,
   Cloud,
+  Touchpad,
+  MoveVertical,
 } from "lucide-react";
 
 export interface PlayerSettings {
@@ -37,8 +39,10 @@ export interface PlayerSettings {
   hotkey: boolean;              // 키보드 단축키
   doubleTouchSeek: boolean;     // 화면 더블 탭 스킵 (기본 ON)
   doubleTouchDuration: number;  // 더블 탭 스킵 시간 (5초 / 10초)
+  mobileGesture: boolean;       // 모바일 화면 스와이프 탐색
 
   // 💬 자막 & 외부 데이터
+  subtitleBottom: number;       // 일반 자막 최저 하단 여백 (15 / 25 / 35 px)
   localSubBtn: boolean;         // 로컬 자막 파일 열기 버튼 표시
   anissiaCard: boolean;         // 애니시아 등록 제작자 현황 카드 표시
 }
@@ -60,8 +64,10 @@ export const DEFAULT_PLAYER_SETTINGS: PlayerSettings = {
   hotkey: true,
   doubleTouchSeek: true,
   doubleTouchDuration: 10,
+  mobileGesture: false, // ⭐ 기본 OFF
 
   // 💬 자막 & 외부 데이터
+  subtitleBottom: 15,
   localSubBtn: true,
   anissiaCard: true,
 };
@@ -138,12 +144,18 @@ export function loadPlayerSettings(): PlayerSettings {
       } catch {}
     }
 
+    const subBottomVal = [15, 25, 35].includes(Number(parsed.subtitleBottom))
+      ? Number(parsed.subtitleBottom)
+      : DEFAULT_PLAYER_SETTINGS.subtitleBottom;
+
     return {
       ...DEFAULT_PLAYER_SETTINGS,
       ...parsed,
       pipBtn: pipBtnVal,
       doubleTouchSeek: parsed.doubleTouchSeek !== undefined ? !!parsed.doubleTouchSeek : true,
       doubleTouchDuration: parsed.doubleTouchDuration === 5 ? 5 : 10,
+      mobileGesture: parsed.mobileGesture !== undefined ? !!parsed.mobileGesture : false,
+      subtitleBottom: subBottomVal,
     };
   } catch {
     return DEFAULT_PLAYER_SETTINGS;
@@ -175,7 +187,15 @@ export function applyPlayerSettingsStyles(settings: PlayerSettings) {
     document.head.appendChild(styleEl);
   }
 
+  const subBottom = [15, 25, 35].includes(Number(settings?.subtitleBottom))
+    ? Number(settings.subtitleBottom)
+    : 15;
+
   styleEl.innerHTML = `
+    .art-video-player,
+    .art-video-player .art-subtitle {
+      --art-subtitle-bottom: ${subBottom}px !important;
+    }
     ${!settings.fullscreenBtn ? ".art-video-player .art-control-fullscreen { display: none !important; }" : ""}
     ${!settings.fullscreenWebBtn ? ".art-video-player .art-control-fullscreenWeb { display: none !important; }" : ""}
     ${!settings.pipBtn ? ".art-video-player .art-control-pip, .art-video-player .art-control-hybrid-pip { display: none !important; }" : ""}
@@ -305,7 +325,7 @@ export default function PlayerSettingsModal({
                   계정 DB 연동
                 </span>
               </div>
-              <p className="text-xs text-slate-400">자주 사용하는 기능 및 버튼을 개별 설정합니다 (계정에 자동 저장)</p>
+              <p className="text-xs text-slate-400">자주 사용하는 기능 및 버튼을 개별 설정합니다</p>
             </div>
           </div>
 
@@ -401,7 +421,7 @@ export default function PlayerSettingsModal({
                       <span className="text-sm font-semibold text-white">브라우저 오디오 AI 스킵</span>
                       <span className="rounded-full bg-purple-500/20 px-1.5 py-0.5 text-[10px] font-bold text-purple-300">데이터 소모</span>
                     </div>
-                    <div className="text-xs text-slate-400">DB에 스킵 정보가 없을 때 브라우저가 음원(5~10MB)을 직접 분석합니다 (기본 OFF)</div>
+                    <div className="text-xs text-slate-400">DB에 스킵 정보가 없을 때 브라우저가 음원(5~10MB)을 직접 분석합니다</div>
                   </div>
                 </div>
                 <ToggleSwitch
@@ -600,6 +620,23 @@ export default function PlayerSettingsModal({
                   </div>
                 )}
               </div>
+
+              {/* 모바일 화면 스와이프 탐색 */}
+              <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/5 bg-slate-900/60 p-3.5 hover:border-purple-500/20 transition">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-purple-500/10 text-purple-400">
+                    <Touchpad className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-semibold text-white">모바일 화면 스와이프 탐색</div>
+                    <div className="text-xs text-slate-400">화면을 길게 누른 채 좌우로 스와이프하여 영상 재생 위치를 조절합니다</div>
+                  </div>
+                </div>
+                <ToggleSwitch
+                  checked={settings.mobileGesture}
+                  onChange={() => toggleSetting("mobileGesture")}
+                />
+              </div>
             </div>
           </div>
 
@@ -611,6 +648,47 @@ export default function PlayerSettingsModal({
             </div>
 
             <div className="space-y-2.5">
+              {/* 일반 자막 최저 높이 */}
+              <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/5 bg-slate-900/60 p-3.5 hover:border-purple-500/20 transition">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-purple-500/10 text-purple-400">
+                    <MoveVertical className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-semibold text-white">일반 자막 최저 높이</div>
+                    <div className="text-xs text-slate-400">일반 자막(VTT/SRT)의 화면 하단 여백을 설정합니다</div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="inline-flex rounded-xl bg-slate-800/90 p-0.5 border border-white/10 text-xs font-semibold">
+                    {([15, 25, 35] as const).map((val) => {
+                      const isSelected = (settings.subtitleBottom || 15) === val;
+                      return (
+                        <button
+                          key={val}
+                          type="button"
+                          onClick={() => {
+                            const next = { ...settings, subtitleBottom: val };
+                            savePlayerSettings(next);
+                            applyPlayerSettingsStyles(next);
+                            onUpdateSettings(next);
+                          }}
+                          className={`rounded-lg px-3 py-1 transition cursor-pointer ${
+                            isSelected
+                              ? "bg-purple-600 text-white shadow-sm font-bold"
+                              : "text-slate-400 hover:text-white"
+                          }`}
+                        >
+                          {val}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <span className="text-xs font-medium text-slate-400">px</span>
+                </div>
+              </div>
+
               {/* 로컬 자막 파일 열기 버튼 */}
               <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/5 bg-slate-900/60 p-3.5 hover:border-purple-500/20 transition">
                 <div className="flex items-center gap-3">

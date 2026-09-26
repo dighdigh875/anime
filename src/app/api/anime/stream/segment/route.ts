@@ -14,7 +14,14 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const targetUrl = searchParams.get("url")?.trim();
-  const refUrl = searchParams.get("ref")?.trim() || "https://playv2.sub3.top/";
+  let refUrl = searchParams.get("ref")?.trim();
+  if (!refUrl) {
+    if (targetUrl && (targetUrl.includes("whycdn") || targetUrl.includes("fri") || targetUrl.includes("michealcdn"))) {
+      refUrl = "https://michealcdn.com/";
+    } else {
+      refUrl = "https://playv2.sub3.top/";
+    }
+  }
   const isAudioOnly = searchParams.get("audio") === "1" || searchParams.get("audio") === "true";
 
   if (!targetUrl) {
@@ -31,12 +38,17 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    const fetchHeaders: Record<string, string> = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      Referer: refUrl,
+    };
+    if (targetUrl.includes("whycdn") || targetUrl.includes("fri") || targetUrl.includes("michealcdn")) {
+      fetchHeaders["Origin"] = "https://michealcdn.com";
+    }
+
     const res = await fetch(targetUrl, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        Referer: refUrl,
-      },
+      headers: fetchHeaders,
     });
 
     if (!res.ok) {
@@ -57,7 +69,7 @@ export async function GET(request: NextRequest) {
             "Content-Type": "audio/aac",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Cache-Control": "public, max-age=86400",
+            "Cache-Control": "public, max-age=86400, s-maxage=86400, immutable",
           },
         });
       }
@@ -69,7 +81,7 @@ export async function GET(request: NextRequest) {
         "Content-Type": "video/mp2t",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Cache-Control": "public, max-age=86400",
+        "Cache-Control": "public, max-age=86400, s-maxage=86400, immutable",
       },
     });
   } catch (error) {

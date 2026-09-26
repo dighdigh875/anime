@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect, DragEvent, ChangeEvent } from "react";
 import { createPortal } from "react-dom";
-import { readSubtitleFile } from "@/lib/subtitle-file";
+import { convertToVtt } from '@/lib/subtitle-format';
+import { validateKoreanSubtitle } from '@/lib/korean-playback';
 import {
   X,
   Search,
@@ -32,6 +33,8 @@ export interface SubtitleOption {
   is_ass: boolean;
   content: string;
   url?: string;
+  episode?: number;
+  orig_filename?: string;
 }
 
 interface SubtitleSelectModalProps {
@@ -86,6 +89,8 @@ export default function SubtitleSelectModal({
       setCreatorError(null);
       setSearchError(null);
       setFileError(null);
+      setSearchResults([]);
+      setUploadedSub(null);
     }
   }, [isOpen, animeTitle, episodeNumber]);
 
@@ -120,6 +125,8 @@ export default function SubtitleSelectModal({
         is_ass: Boolean(data.subtitle.is_ass),
         content: data.subtitle.content,
         url: data.subtitle.url,
+        episode: data.subtitle.episode,
+        orig_filename: data.subtitle.orig_filename,
       };
 
       onSelectSubtitle(newSub);
@@ -157,6 +164,8 @@ export default function SubtitleSelectModal({
         is_ass: Boolean(s.is_ass),
         content: s.content || "",
         url: s.url || "",
+        episode: s.episode,
+        orig_filename: s.orig_filename,
       }));
 
       setSearchResults(subs);
@@ -171,9 +180,8 @@ export default function SubtitleSelectModal({
   };
 
   // 3. Process local subtitle file (.ass, .srt, .smi, .vtt)
-  const processSubtitleFile = (file: File) => {
+  const processSubtitleFile = async (file: File) => {
     setFileError(null);
-    setUploadedSub(null);
     const fileName = file.name;
     const lowerName = fileName.toLowerCase();
 
@@ -188,22 +196,32 @@ export default function SubtitleSelectModal({
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const parsed = readSubtitleFile(new Uint8Array(e.target?.result as ArrayBuffer), fileName);
-        setUploadedSub({name:`[로컬 파일] ${fileName}`,format:parsed.is_ass ? "ASS" : "VTT",...parsed});
-      } catch (error) {
-        setFileError(error instanceof Error ? error.message : "자막 파일을 읽지 못했습니다.");
+    if (file.size > 2_000_000) {setFileError('2MB 이하의 자막 파일을 선택해 주세요.'); return;}
+    try {
+      const buffer = await file.arrayBuffer();
+      let text: string;
+      try {text = new TextDecoder('utf-8', {fatal: true}).decode(buffer);}
+      catch {text = new TextDecoder('euc-kr').decode(buffer);}
+      if (!text.trim()) {
+        setFileError("자막 파일 내용이 비어 있습니다.");
+        return;
       }
-    };
 
-    reader.onerror = () => {
+      const isAss = lowerName.endsWith(".ass") || lowerName.endsWith(".ssa");
+      const converted = convertToVtt(text, '.' + lowerName.split('.').pop());
+      const newSub: SubtitleOption = {
+        name: `[로컬 파일] ${fileName}`,
+        format: isAss ? "ASS" : "VTT",
+        is_ass: isAss,
+        content: converted.content,
+        episode: episodeNumber,
+        orig_filename: fileName,
+      };
+      if (!validateKoreanSubtitle(newSub)) {setFileError('한국어 대사와 재생 시간이 있는 자막 파일인지 확인해 주세요.'); return;}
+      setUploadedSub(newSub);
+    } catch {
       setFileError("파일을 읽는 도중 오류가 발생했습니다.");
-    };
-
-    // Korean SMI/SRT are often CP949 or UTF-8
-    reader.readAsArrayBuffer(file);
+    }
   };
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {

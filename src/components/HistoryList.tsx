@@ -127,7 +127,8 @@ export default function HistoryList({ initialItems }: { initialItems: HistoryIte
               ? Math.min(100, Math.max(0, Math.round((item.watch_time / item.duration) * 100)))
               : 0;
 
-          const watchUrl = `/watch/${item.anime_id}/${item.episode_number}`;
+          const watchUrl = /^\/korean\/\d+(?:\?ep=\d+(?:\.\d)?)?$/.test(item.watch_url)
+            ? item.watch_url : `/watch/${item.anime_id}/${item.episode_number}`;
 
           return (
             <Link

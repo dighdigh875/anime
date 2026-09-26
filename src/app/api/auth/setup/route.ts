@@ -24,9 +24,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!password || typeof password !== "string" || password.length < 8) {
+    if (!password || typeof password !== "string" || password.length < 4) {
       return NextResponse.json(
-        { success: false, message: "비밀번호는 최소 8자 이상이어야 합니다." },
+        { success: false, message: "비밀번호는 최소 4자 이상이어야 합니다." },
         { status: 400 }
       );
     }

@@ -10,7 +10,7 @@ import {
   Play,
   Volume2,
 } from "lucide-react";
-import { EpisodeItem } from "@/lib/reanime-client";
+import { EpisodeItem } from "@/lib/linkkf";
 
 interface EpisodeListSectionProps {
   animeId: string;

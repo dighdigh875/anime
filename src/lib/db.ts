@@ -1,5 +1,3 @@
-import { normalizeReanimeUrl, DEFAULT_REANIME_URL } from "./reanime-client";
-export { DEFAULT_REANIME_URL } from "./reanime-client";
 import { neon } from "@neondatabase/serverless";
 
 export function getDb() {
@@ -197,24 +195,6 @@ export async function initDb() {
     }
   }
 
-  // Reanime's slug IDs can exceed the previous 100-character limit. Widen existing
-  // columns as well as fresh installations; never truncate or remap saved IDs.
-  await sql`
-    DO $$
-    DECLARE target RECORD;
-    BEGIN
-      FOR target IN
-        SELECT table_name, column_name FROM information_schema.columns
-        WHERE table_schema = current_schema() AND data_type = 'character varying'
-          AND ((column_name = 'anime_id' AND table_name IN
-            ('anime_history', 'anime_favorites', 'anime_skips', 'anime_themes', 'reanime_subtitle_settings'))
-            OR (table_name = 'reanime_subtitle_settings' AND column_name = 'subtitle_name'))
-      LOOP
-        EXECUTE format('ALTER TABLE %I ALTER COLUMN %I TYPE TEXT', target.table_name, target.column_name);
-      END LOOP;
-    END $$;
-  `;
-
   isInitialized = true;
 }
 
@@ -255,6 +235,7 @@ export async function createUser(data: {
   passwordHash: string;
   nickname?: string;
   isAdmin?: boolean;
+  isFirstLogin?: boolean;
 }) {
   const sql = getDb();
   if (!sql) throw new Error("Database not connected");
@@ -267,7 +248,7 @@ export async function createUser(data: {
       ${data.nickname || data.username},
       ${data.isAdmin ?? false},
       TRUE,
-      FALSE,
+      ${data.isFirstLogin ?? false},
       CURRENT_TIMESTAMP
     )
     RETURNING id, username, nickname, is_admin, is_active, created_at;
@@ -497,12 +478,136 @@ export async function getAnimeHistoryMap(
 // System Settings & Dynamic Base URL Helpers
 // ----------------------------------------------------
 
-
+export const DEFAULT_LINKKF_URL = "https://linkkf.tv";
 let cachedBaseUrl: { url: string; timestamp: number } | null = null;
 
-export async function getReanimeBaseUrl(): Promise<string> {
+export async function getLinkkfBaseUrl(): Promise<string> {
   if (cachedBaseUrl && Date.now() - cachedBaseUrl.timestamp < 30_000) {
     return cachedBaseUrl.url;
+  }
+
+  const sql = getDb();
+  if (sql) {
+    try {
+      await initDb();
+      const rows = await sql`
+        SELECT value FROM system_settings
+        WHERE key = 'linkkf_base_url'
+        LIMIT 1;
+      `;
+      if (rows.length > 0 && rows[0].value) {
+        const val = String(rows[0].value).trim().replace(/\/+$/, "");
+        if (val) {
+          cachedBaseUrl = { url: val, timestamp: Date.now() };
+          return val;
+        }
+      }
+    } catch (e) {
+      console.warn("[getLinkkfBaseUrl error]:", e);
+    }
+  }
+
+  const envUrl = process.env.LINKKF_BASE_URL?.trim().replace(/\/+$/, "");
+  const finalUrl = envUrl || DEFAULT_LINKKF_URL;
+  cachedBaseUrl = { url: finalUrl, timestamp: Date.now() };
+  return finalUrl;
+}
+
+export async function setLinkkfBaseUrl(newUrl: string): Promise<boolean> {
+  const sql = getDb();
+  if (!sql) return false;
+  await initDb();
+
+  let formatted = newUrl.trim();
+  if (!formatted.startsWith("http://") && !formatted.startsWith("https://")) {
+    formatted = `https://${formatted}`;
+  }
+  formatted = formatted.replace(/\/+$/, "");
+
+  try {
+    await sql`
+      INSERT INTO system_settings (key, value, updated_at)
+      VALUES ('linkkf_base_url', ${formatted}, CURRENT_TIMESTAMP)
+      ON CONFLICT (key) DO UPDATE SET
+        value = EXCLUDED.value,
+        updated_at = CURRENT_TIMESTAMP;
+    `;
+    cachedBaseUrl = { url: formatted, timestamp: Date.now() };
+    return true;
+  } catch (e) {
+    console.error("[setLinkkfBaseUrl error]:", e);
+    return false;
+  }
+}
+
+export const DEFAULT_OHLI24_URL = "https://www.ohli24.net";
+let cachedOhli24BaseUrl: { url: string; timestamp: number } | null = null;
+
+export async function getOhli24BaseUrl(): Promise<string> {
+  if (cachedOhli24BaseUrl && Date.now() - cachedOhli24BaseUrl.timestamp < 30_000) {
+    return cachedOhli24BaseUrl.url;
+  }
+
+  const sql = getDb();
+  if (sql) {
+    try {
+      await initDb();
+      const rows = await sql`
+        SELECT value FROM system_settings
+        WHERE key = 'ohli24_base_url'
+        LIMIT 1;
+      `;
+      if (rows.length > 0 && rows[0].value) {
+        const val = String(rows[0].value).trim().replace(/\/+$/, "");
+        if (val) {
+          cachedOhli24BaseUrl = { url: val, timestamp: Date.now() };
+          return val;
+        }
+      }
+    } catch (e) {
+      console.warn("[getOhli24BaseUrl error]:", e);
+    }
+  }
+
+  const envUrl = process.env.OHLI24_BASE_URL?.trim().replace(/\/+$/, "");
+  const finalUrl = envUrl || DEFAULT_OHLI24_URL;
+  cachedOhli24BaseUrl = { url: finalUrl, timestamp: Date.now() };
+  return finalUrl;
+}
+
+export async function setOhli24BaseUrl(newUrl: string): Promise<boolean> {
+  const sql = getDb();
+  if (!sql) return false;
+  await initDb();
+
+  let formatted = newUrl.trim();
+  if (!formatted.startsWith("http://") && !formatted.startsWith("https://")) {
+    formatted = `https://${formatted}`;
+  }
+  formatted = formatted.replace(/\/+$/, "");
+
+  try {
+    await sql`
+      INSERT INTO system_settings (key, value, updated_at)
+      VALUES ('ohli24_base_url', ${formatted}, CURRENT_TIMESTAMP)
+      ON CONFLICT (key) DO UPDATE SET
+        value = EXCLUDED.value,
+        updated_at = CURRENT_TIMESTAMP;
+    `;
+    cachedOhli24BaseUrl = { url: formatted, timestamp: Date.now() };
+    return true;
+  } catch (e) {
+    console.error("[setOhli24BaseUrl error]:", e);
+    return false;
+  }
+}
+
+export const DEFAULT_REANIME_URL = "https://reanime.to";
+let cachedReanimeBaseUrl: { url: string; timestamp: number } | null = null;
+
+export async function getReanimeBaseUrl(): Promise<string> {
+  if (cachedReanimeBaseUrl && Date.now() - cachedReanimeBaseUrl.timestamp < 30_000) {
+    return cachedReanimeBaseUrl.url;
   }
 
   const sql = getDb();
@@ -515,9 +620,9 @@ export async function getReanimeBaseUrl(): Promise<string> {
         LIMIT 1;
       `;
       if (rows.length > 0 && rows[0].value) {
-        const val = normalizeReanimeUrl(String(rows[0].value));
+        const val = String(rows[0].value).trim().replace(/\/+$/, "");
         if (val) {
-          cachedBaseUrl = { url: val, timestamp: Date.now() };
+          cachedReanimeBaseUrl = { url: val, timestamp: Date.now() };
           return val;
         }
       }
@@ -527,8 +632,8 @@ export async function getReanimeBaseUrl(): Promise<string> {
   }
 
   const envUrl = process.env.REANIME_BASE_URL?.trim().replace(/\/+$/, "");
-  const finalUrl = normalizeReanimeUrl(envUrl || DEFAULT_REANIME_URL);
-  cachedBaseUrl = { url: finalUrl, timestamp: Date.now() };
+  const finalUrl = envUrl || DEFAULT_REANIME_URL;
+  cachedReanimeBaseUrl = { url: finalUrl, timestamp: Date.now() };
   return finalUrl;
 }
 
@@ -537,7 +642,11 @@ export async function setReanimeBaseUrl(newUrl: string): Promise<boolean> {
   if (!sql) return false;
   await initDb();
 
-  const formatted = normalizeReanimeUrl(newUrl);
+  let formatted = newUrl.trim();
+  if (!formatted.startsWith("http://") && !formatted.startsWith("https://")) {
+    formatted = `https://${formatted}`;
+  }
+  formatted = formatted.replace(/\/+$/, "");
 
   try {
     await sql`
@@ -547,13 +656,15 @@ export async function setReanimeBaseUrl(newUrl: string): Promise<boolean> {
         value = EXCLUDED.value,
         updated_at = CURRENT_TIMESTAMP;
     `;
-    cachedBaseUrl = { url: formatted, timestamp: Date.now() };
+    cachedReanimeBaseUrl = { url: formatted, timestamp: Date.now() };
     return true;
   } catch (e) {
     console.error("[setReanimeBaseUrl error]:", e);
     return false;
   }
 }
+
+
 
 // ----------------------------------------------------
 // User Settings Database Helpers
@@ -663,6 +774,94 @@ export async function clearLoginFailures(userKey: string): Promise<void> {
   }
 }
 
+export async function getAllUsers() {
+  const sql = getDb();
+  if (!sql) return [];
+  await initDb();
+  try {
+    const rows = await sql`
+      SELECT id, username, nickname, is_admin, is_active, is_first_login, created_at
+      FROM users
+      ORDER BY created_at DESC;
+    `;
+    return rows;
+  } catch (e) {
+    console.error("[db.getAllUsers error]:", e);
+    return [];
+  }
+}
+
+export async function toggleUserActive(id: number, isActive: boolean): Promise<boolean> {
+  const sql = getDb();
+  if (!sql) return false;
+  await initDb();
+  try {
+    await sql`UPDATE users SET is_active = ${isActive} WHERE id = ${id}`;
+    return true;
+  } catch (e) {
+    console.error("[db.toggleUserActive error]:", e);
+    return false;
+  }
+}
+
+export async function resetUserPassword(id: number, passwordHash: string): Promise<boolean> {
+  const sql = getDb();
+  if (!sql) return false;
+  await initDb();
+  try {
+    await sql`UPDATE users SET password = ${passwordHash}, is_first_login = TRUE WHERE id = ${id}`;
+    return true;
+  } catch (e) {
+    console.error("[db.resetUserPassword error]:", e);
+    return false;
+  }
+}
+
+export async function updateUserProfile(
+  id: number,
+  data: { nickname?: string; passwordHash?: string }
+): Promise<boolean> {
+  const sql = getDb();
+  if (!sql) return false;
+  await initDb();
+  try {
+    if (data.passwordHash && data.nickname) {
+      await sql`UPDATE users SET nickname = ${data.nickname}, password = ${data.passwordHash}, is_first_login = FALSE WHERE id = ${id}`;
+    } else if (data.passwordHash) {
+      await sql`UPDATE users SET password = ${data.passwordHash}, is_first_login = FALSE WHERE id = ${id}`;
+    } else if (data.nickname) {
+      await sql`UPDATE users SET nickname = ${data.nickname} WHERE id = ${id}`;
+    }
+    return true;
+  } catch (e) {
+    console.error("[db.updateUserProfile error]:", e);
+    return false;
+  }
+}
+
+export async function deleteUser(id: number): Promise<boolean> {
+  const sql = getDb();
+  if (!sql) return false;
+  await initDb();
+  try {
+    // 사용자 관련 데이터도 함께 삭제
+    const rows = await sql`SELECT username FROM users WHERE id = ${id} LIMIT 1`;
+    if (rows.length === 0) return false;
+    const username = rows[0].username;
+    await sql`DELETE FROM anime_history WHERE user_id = ${username}`;
+    await sql`DELETE FROM anime_favorites WHERE user_id = ${username}`;
+    await sql`DELETE FROM user_settings WHERE user_id = ${username}`;
+    await sql`DELETE FROM users WHERE id = ${id}`;
+    return true;
+  } catch (e) {
+    console.error("[db.deleteUser error]:", e);
+    return false;
+  }
+}
+
+// ==========================================
+// ReAnime Subtitle & Sync Settings
+// ==========================================
 export interface ReanimeSubtitleSetting {
   sync_offset: number;
   subtitle_name?: string | null;
@@ -724,3 +923,4 @@ export async function setReanimeSubtitleSetting(
     return false;
   }
 }
+

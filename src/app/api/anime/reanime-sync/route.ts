@@ -1,12 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser, getCurrentUserId } from "@/lib/auth";
 import { getReanimeSubtitleSetting, setReanimeSubtitleSetting } from "@/lib/db";
-import { reanimeSlug } from "@/lib/reanime-client";
-
-function validId(id: unknown): id is string {
-  if (typeof id !== "string" || id.length > 500) return false;
-  try { reanimeSlug(id); return true; } catch { return false; }
-}
 
 export async function GET(request: NextRequest) {
   const session = await getSessionUser();
@@ -18,12 +12,12 @@ export async function GET(request: NextRequest) {
   const animeId = searchParams.get("animeId");
   const epStr = searchParams.get("ep");
 
-  if (!validId(animeId) || !epStr) {
+  if (!animeId || !epStr) {
     return NextResponse.json({ success: false, message: "Missing animeId or ep" }, { status: 400 });
   }
 
-  const epNum = Number(epStr);
-  if (!Number.isSafeInteger(epNum) || epNum <= 0) {
+  const epNum = parseInt(epStr, 10);
+  if (isNaN(epNum)) {
     return NextResponse.json({ success: false, message: "Invalid ep number" }, { status: 400 });
   }
 
@@ -46,17 +40,12 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { animeId, ep, syncOffset, subtitleName, subtitleUrl } = body;
 
-    if (!validId(animeId) || ep === undefined) {
+    if (!animeId || ep === undefined) {
       return NextResponse.json({ success: false, message: "Missing required fields" }, { status: 400 });
     }
 
-    const epNum = Number(ep);
-    const offsetVal = Number(syncOffset ?? 0);
-    if (!Number.isSafeInteger(epNum) || epNum <= 0 || !Number.isFinite(offsetVal) || Math.abs(offsetVal) > 86400 ||
-      (subtitleName != null && (typeof subtitleName !== "string" || subtitleName.length > 500)) ||
-      (subtitleUrl != null && (typeof subtitleUrl !== "string" || subtitleUrl.length > 4096))) {
-      return NextResponse.json({success:false,message:"회차 또는 자막 설정 값이 올바르지 않습니다."},{status:400});
-    }
+    const epNum = parseInt(String(ep), 10);
+    const offsetVal = parseFloat(String(syncOffset || 0.0));
 
     const userId = await getCurrentUserId();
     const ok = await setReanimeSubtitleSetting(
@@ -68,9 +57,9 @@ export async function POST(request: NextRequest) {
       subtitleUrl || null
     );
 
-    return NextResponse.json({ success: ok }, {status: ok ? 200 : 503});
+    return NextResponse.json({ success: ok });
   } catch (e: any) {
     console.error("[reanime-sync POST error]:", e);
-    return NextResponse.json({ success: false, message: "자막 설정 저장에 실패했습니다." }, { status: 500 });
+    return NextResponse.json({ success: false, message: e?.message || "Internal error" }, { status: 500 });
   }
 }
