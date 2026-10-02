@@ -2,6 +2,7 @@ import {NextRequest, NextResponse} from 'next/server';
 import {getSessionUser} from '@/lib/auth';
 import {getReanimeBaseUrl} from '@/lib/db';
 import {getReanimeDetail, getReanimeStream, ReanimeRequestError} from '@/lib/reanime-api';
+import {fetchReanimeServer, isReanimeWorkerConfigured} from '@/lib/reanime-server-fetch';
 
 export const maxDuration = 15;
 const headers = {'Cache-Control': 'private, no-store'};
@@ -21,10 +22,10 @@ export async function GET(request: NextRequest) {
   const baseUrl = await getReanimeBaseUrl();
   try {
     return NextResponse.json(episode === null
-      ? {detail: await getReanimeDetail(baseUrl, id, request.signal)}
-      : {stream: await getReanimeStream(baseUrl, anilistId, episode, request.signal, language)}, {headers});
+      ? {detail: await getReanimeDetail(baseUrl, id, request.signal, fetchReanimeServer)}
+      : {stream: await getReanimeStream(baseUrl, anilistId, episode, request.signal, language, fetchReanimeServer)}, {headers});
   } catch (error) {
     console.error('[Anissia Reanime]', {stage: episode === null ? 'detail' : 'stream', status: error instanceof ReanimeRequestError ? error.status : undefined, message: error instanceof Error ? error.message : 'Unknown error'});
-    return NextResponse.json({code: 'REANIME_UNAVAILABLE', baseUrl, error: error instanceof ReanimeRequestError ? error.message : 'Reanime에 연결하지 못했습니다.'}, {status: 502, headers});
+    return NextResponse.json({code: 'REANIME_UNAVAILABLE', baseUrl, browserFallback: !isReanimeWorkerConfigured(), error: error instanceof ReanimeRequestError ? error.message : 'Reanime에 연결하지 못했습니다.'}, {status: 502, headers});
   }
 }

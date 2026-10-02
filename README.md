@@ -21,15 +21,21 @@ Next.js 15 App Router와 Vercel Serverless, Neon Postgres를 기반으로 구축
 
 작품·제작자 정보 출처: [애니시아](https://anissia.net/).
 
-### Reanime 연결 도우미
+### iPad·모바일용 Reanime 서버 연결
 
-Reanime 원본 페이지는 다른 사이트의 iframe에서 열 수 없습니다. 서버에서 영상 주소를 받으면 직접 플레이어를 열고, Vercel 요청이 거부될 때는 PC Chrome의 **Anihub Reanime 연결 도우미**로 같은 회차의 주소를 조회합니다. 도우미가 없으면 설치 안내를 표시합니다. 원본 페이지를 미러링하거나 브라우저 보안을 해제하지 않습니다.
+Vercel에서 Reanime 요청이 거부될 때는 [Cloudflare Worker 연결 안내](workers/reanime-relay/README.md)에 따라 공개 작품 정보와 플레이어 주소 조회를 Worker로 보낼 수 있습니다. Vercel에 `REANIME_WORKER_URL`과 `REANIME_WORKER_TOKEN`을 설정하고 재배포합니다. 인증 키는 서버에만 저장하며 `NEXT_PUBLIC_*` 변수로 만들지 않습니다.
+
+Worker가 주소를 반환하면 브라우저가 FlixCloud 플레이어를 직접 열고 기존 한국어 자막을 표시합니다. 한국어 자막이 없는 회차는 `한글 자막 없이 재생`을 사용합니다. 이 경로는 브라우저 확장 기능이나 켜 둔 PC를 필요로 하지 않습니다. Worker 설정 오류나 원본 서버 차단은 오류로 표시하며 모바일에 Chrome 도우미 설치를 요구하지 않습니다. 실제 배포 및 iPad Safari에서 재생·자막·전체화면을 확인해야 합니다.
+
+### 선택 사항: PC Chrome 연결 도우미
+
+Reanime 원본 페이지는 다른 사이트의 iframe에서 열 수 없습니다. Worker를 설정하지 않은 설치에서는 서버 연결 실패 시 PC Chrome의 **Anihub Reanime 연결 도우미**로 같은 회차의 주소를 조회할 수 있습니다. 도우미가 없으면 설치 안내를 표시합니다.
 
 1. 재생 화면의 `연결 도우미 다운로드`로 ZIP을 받고 압축을 풉니다.
 2. `chrome://extensions`에서 `개발자 모드` → `압축해제된 확장 프로그램을 로드합니다` → `manifest.json`이 있는 폴더를 선택합니다.
 3. Anihub를 새로고침하고 회차를 재생합니다.
 
-현재 패키지는 `https://anime-eight-virid.vercel.app`와 `https://reanime.to`만 지원합니다. 도우미는 공개 영상 주소 조회에 로그인 쿠키를 포함하지 않으며 영상·자막·시청 기록을 저장하지 않습니다. 다른 배포 도메인으로 이전하면 [확장 기능의 허용 사이트 설정](extensions/reanime-bridge/README.md)을 함께 수정해야 합니다. 휴대폰이나 확장 기능을 설치하지 않은 브라우저에서는 서버 연결이 차단될 경우 재생할 수 없습니다.
+현재 패키지는 `https://anime-eight-virid.vercel.app`와 `https://reanime.to`만 지원합니다. 도우미는 공개 영상 주소 조회에 로그인 쿠키를 포함하지 않으며 영상·자막·시청 기록을 저장하지 않습니다. 다른 배포 도메인으로 이전하면 [확장 기능의 허용 사이트 설정](extensions/reanime-bridge/README.md)을 함께 수정해야 합니다. iPad·모바일에서는 위의 Worker 연결을 사용하세요.
 
 소스는 `extensions/reanime-bridge`에 있고, `npm run package:reanime-bridge`로 다운로드 ZIP을 갱신합니다. 테스트는 배포 ZIP이 검토한 소스와 일치하는지도 검사합니다.
 

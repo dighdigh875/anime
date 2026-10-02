@@ -3,6 +3,7 @@ import { getSessionUser } from '@/lib/auth';
 import { getAnissiaAnime } from '@/lib/anissia';
 import {searchReanimeCandidates, ReanimeRequestError} from '@/lib/reanime-api';
 import { getAnimeMapping, saveAnimeMapping } from '@/lib/anime-mapping';
+import {fetchReanimeServer, isReanimeWorkerConfigured} from '@/lib/reanime-server-fetch';
 import { getReanimeBaseUrl } from '@/lib/db';
 
 export const maxDuration = 30;
@@ -19,11 +20,11 @@ export async function GET(request: NextRequest) {
       const anime = await getAnissiaAnime(id);
       const baseUrl = await getReanimeBaseUrl();
       try {
-        const candidates = await searchReanimeCandidates(anime, baseUrl, p.get('q')?.trim().slice(0, 120) || undefined, request.signal);
+        const candidates = await searchReanimeCandidates(anime, baseUrl, p.get('q')?.trim().slice(0, 120) || undefined, request.signal, fetchReanimeServer);
         return NextResponse.json({candidates}, {headers});
       } catch (error) {
         console.error('[Anissia Reanime search]', {status: error instanceof ReanimeRequestError ? error.status : undefined, message: error instanceof Error ? error.message : 'Unknown error'});
-        return NextResponse.json({code: 'REANIME_UNAVAILABLE', baseUrl, error: error instanceof ReanimeRequestError ? error.message : 'Reanime 검색에 연결하지 못했습니다.'}, {status: 502, headers});
+        return NextResponse.json({code: 'REANIME_UNAVAILABLE', baseUrl, browserFallback: !isReanimeWorkerConfigured(), error: error instanceof ReanimeRequestError ? error.message : 'Reanime 검색에 연결하지 못했습니다.'}, {status: 502, headers});
       }
     }
     const mapping = await getAnimeMapping(user.username, id);

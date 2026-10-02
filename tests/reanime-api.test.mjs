@@ -51,6 +51,13 @@ test('authentication and database failures never trigger browser retry',async()=
     });
   }
 });
+test('a configured Worker failure stays a server error without requesting an iPad browser extension',async()=>{
+  await withFetch(async()=>Response.json({code:'REANIME_UNAVAILABLE',baseUrl:base,browserFallback:false,error:'Reanime HTTP 403'},{status:502}),async()=>{
+    let retried=false;
+    await assert.rejects(requestWithReanimeFallback('/api/test',async()=>{retried=true;}),/403/);
+    assert.equal(retried,false);
+  });
+});
 test('a failed browser retry is a connection error, not an empty search result',async()=>{
   await withFetch(async()=>Response.json({code:'REANIME_UNAVAILABLE',baseUrl:base,error:'검색 HTTP 403'},{status:502}),async()=>{
     await assert.rejects(requestWithReanimeFallback('/api/test',async()=>{throw new TypeError('Failed to fetch');}),/브라우저/);

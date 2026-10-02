@@ -12,16 +12,18 @@ export function reanimeOrigin(baseUrl: string): string {
   return url.origin;
 }
 
-async function request(baseUrl: string, path: string, signal?: AbortSignal): Promise<any> {
+export type ReanimeFetch = (url: string, init?: RequestInit) => Promise<Response>;
+
+async function request(baseUrl: string, path: string, signal?: AbortSignal, fetcher: ReanimeFetch = fetch): Promise<any> {
   const timeout = AbortSignal.timeout(8000);
   let response: Response;
   try {
-    response = await fetch(`${reanimeOrigin(baseUrl)}${path}`, {
+    response = await fetcher(`${reanimeOrigin(baseUrl)}${path}`, {
       headers: {Accept: 'application/json'}, credentials: 'omit', cache: 'no-store',
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
   } catch (error) {
-    if (signal?.aborted) throw error;
+    if (signal?.aborted || error instanceof ReanimeRequestError) throw error;
     throw new ReanimeRequestError(timeout.aborted ? 'Reanime 응답 시간이 초과되었습니다.' : 'Reanime에 연결하지 못했습니다.');
   }
   if (!response.ok) throw new ReanimeRequestError(`Reanime 요청 실패 (HTTP ${response.status}).`, response.status);
@@ -30,17 +32,17 @@ async function request(baseUrl: string, path: string, signal?: AbortSignal): Pro
 }
 
 export async function searchReanimeCandidates(
-  anime: {originalSubject: string; subject: string; startDate: string}, baseUrl: string, query?: string, signal?: AbortSignal,
+  anime: {originalSubject: string; subject: string; startDate: string}, baseUrl: string, query?: string, signal?: AbortSignal, fetcher: ReanimeFetch = fetch,
 ): Promise<ReanimeCandidate[]> {
   const terms = query ? [query] : Array.from(new Set([anime.originalSubject, anime.subject].filter(Boolean)));
   const batches = await Promise.all(terms.map(async term => {
-    let json = await request(baseUrl, `/api/v1/search?q=${encodeURIComponent(term)}`, signal);
+    let json = await request(baseUrl, `/api/v1/search?q=${encodeURIComponent(term)}`, signal, fetcher);
     if (!Array.isArray(json?.results)) throw new ReanimeRequestError('Reanime 검색 응답을 읽지 못했습니다.');
     // Reanime can return no matches for decorative punctuation in native titles.
     // Preserve letters/numerals (including Ⅲ) and retry only an empty, valid response.
     const simplified = term.replace(/[\p{P}\p{S}]/gu, '').replace(/\s+/g, ' ').trim();
     if (!json.results.length && simplified && simplified !== term) {
-      json = await request(baseUrl, `/api/v1/search?q=${encodeURIComponent(simplified)}`, signal);
+      json = await request(baseUrl, `/api/v1/search?q=${encodeURIComponent(simplified)}`, signal, fetcher);
       if (!Array.isArray(json?.results)) throw new ReanimeRequestError('Reanime 검색 응답을 읽지 못했습니다.');
     }
     return json.results.filter((item: any) => item && /^[a-zA-Z0-9_-]{1,230}$/.test(item.anime_id)).map((item: any): ReanimeCandidate => ({
@@ -57,11 +59,11 @@ export async function searchReanimeCandidates(
 
 export interface ReanimeDetail extends AnimeDetail { anilistId: number }
 
-export async function getReanimeDetail(baseUrl: string, id: string, signal?: AbortSignal): Promise<ReanimeDetail> {
+export async function getReanimeDetail(baseUrl: string, id: string, signal?: AbortSignal, fetcher: ReanimeFetch = fetch): Promise<ReanimeDetail> {
   if (!/^re_[a-zA-Z0-9_-]{1,230}$/.test(id)) throw new Error('잘못된 Reanime 작품 번호입니다.');
   const slug = id.slice(3);
   const [raw, eps] = await Promise.all([
-    request(baseUrl, `/api/v1/anime/${slug}`, signal), request(baseUrl, `/api/v1/anime/${slug}/episodes`, signal),
+    request(baseUrl, `/api/v1/anime/${slug}`, signal, fetcher), request(baseUrl, `/api/v1/anime/${slug}/episodes`, signal, fetcher),
   ]);
   if (!raw?.title || !Array.isArray(eps?.data)) throw new ReanimeRequestError('Reanime 작품·회차 응답을 읽지 못했습니다.');
   const anilistId = Number(raw.anilist_id || 0);
@@ -81,11 +83,11 @@ export async function getReanimeDetail(baseUrl: string, id: string, signal?: Abo
   };
 }
 
-export async function getReanimeStream(baseUrl: string, anilistId: number, episode: number, signal?: AbortSignal, language: 'sub' | 'dub' = 'sub'): Promise<EpisodeStreamInfo> {
+export async function getReanimeStream(baseUrl: string, anilistId: number, episode: number, signal?: AbortSignal, language: 'sub' | 'dub' = 'sub', fetcher: ReanimeFetch = fetch): Promise<EpisodeStreamInfo> {
   if (!Number.isSafeInteger(anilistId) || anilistId <= 0 || !Number.isFinite(episode) || episode < 0 || episode > 10000) {
     throw new Error('영상 작품·회차 번호를 확인하지 못했습니다.');
   }
-  const json = await request(baseUrl, `/api/flix/${anilistId}/${episode}`, signal);
+  const json = await request(baseUrl, `/api/flix/${anilistId}/${episode}`, signal, fetcher);
   return parseReanimeStream(json, language);
 }
 
