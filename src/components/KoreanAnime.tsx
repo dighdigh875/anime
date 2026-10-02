@@ -11,6 +11,8 @@ import type { ReanimeCandidate } from '@/lib/korean-playback';
 import type { ReanimeDetail } from '@/lib/reanime-api';
 import {searchKoreanReanime, loadKoreanReanimeDetail, loadKoreanReanimeStream} from '@/lib/korean-reanime-client';
 import {validateKoreanSubtitle} from '@/lib/korean-playback';
+import {ReanimeBridgeError} from '@/lib/reanime-browser-bridge';
+import ReanimeConnectionHelp from './ReanimeConnectionHelp';
 
 async function jsonRequest(url: string, init?: RequestInit) {
   const response = await fetch(url, init);
@@ -45,11 +47,12 @@ export default function KoreanAnime({animeNo, initialEpisode}: {animeNo: number;
   const [prepared, setPrepared] = useState<any>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [reload, setReload] = useState(0);
+  const [needsBridge, setNeedsBridge] = useState(false);
   const generation = useRef(0);
   const activeRequest = useRef<AbortController | null>(null);
   const searchRequest = useRef<AbortController | null>(null);
 
-  const resetPlayback = () => {generation.current++; activeRequest.current?.abort(); setPrepared(null); setNotice(''); setBusy(false);};
+  const resetPlayback = () => {generation.current++; activeRequest.current?.abort(); setPrepared(null); setNotice(''); setBusy(false); setNeedsBridge(false);};
   useEffect(() => {
     const controller = new AbortController();
     resetPlayback(); searchRequest.current?.abort(); setSearching(false);
@@ -119,7 +122,7 @@ export default function KoreanAnime({animeNo, initialEpisode}: {animeNo: number;
     // Keep the current iframe mounted while looking for subtitles for this episode.
     activeRequest.current?.abort();
     const token = ++generation.current;
-    setBusy(true); setError(''); setNotice(''); setModalOpen(false);
+    setBusy(true); setError(''); setNotice(''); setModalOpen(false); setNeedsBridge(false);
     const controller = new AbortController(); activeRequest.current = controller;
     try {
       if (detail.id !== mapping.reanimeId) throw new Error('영상 작품과 저장된 연결이 일치하지 않습니다. 다시 불러와 주세요.');
@@ -149,7 +152,7 @@ export default function KoreanAnime({animeNo, initialEpisode}: {animeNo: number;
       }
       else if (data.status === 'ready') {setPrepared({...data, stream: existingStream || data.stream}); setNotice('한국어 자막 파일을 확인했습니다. 재생을 시작할 수 있습니다.');}
       else setNotice(statusText[data.status] || '재생을 준비하지 못했습니다.');
-    } catch (e: any) {if (!controller.signal.aborted) {setError(e.message); setNotice('');}}
+    } catch (e: any) {if (!controller.signal.aborted) {setError(e.message); setNotice(''); setNeedsBridge(e instanceof ReanimeBridgeError && e.code === 'NOT_INSTALLED');}}
     finally {if (token === generation.current) setBusy(false);}
   };
   const episodes = detail ? [...new Set(detail.sub_episodes.map(e => e.number - (mapping?.episodeOffset || 0)).filter(n => n >= 0))].sort((a,b) => a-b) : [];
@@ -190,6 +193,7 @@ export default function KoreanAnime({animeNo, initialEpisode}: {animeNo: number;
         {!episodes.length && <p className="mt-3 text-sm text-amber-300">연결된 작품에 선택할 수 있는 영상 회차가 없습니다.</p>}
         {notice && <p role="status" className="mt-4 text-sm leading-6 text-slate-300">{notice}</p>}
       </section>}
+      {needsBridge && <ReanimeConnectionHelp/>}
       {prepared && <IframePlayer key={`${animeNo}-${episode}-${prepared.videoEpisode}`} animeId={mapping!.reanimeId} animeTitle={anime.subject} animePoster={detail?.poster} episodeNumber={prepared.videoEpisode}
         initialEpTitle={episode === 0 ? '단편' : `${episode}화`} embedUrl={prepared.stream.embed_url || prepared.stream.player_url}
         allowNestedPlayback={prepared.stream.reanime_watch_page}

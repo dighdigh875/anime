@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Player from "@/components/Player";
 import { stripReanimeId } from "@/lib/providers";
 import { EpisodeItem } from "@/lib/providers/types";
 import Link from "next/link";
 import { ArrowLeft, Loader2, RefreshCw } from "lucide-react";
+import {loadKoreanReanimeStream} from '@/lib/korean-reanime-client';
+import {ReanimeBridgeError} from '@/lib/reanime-browser-bridge';
+import ReanimeConnectionHelp from './ReanimeConnectionHelp';
 
 interface ReanimeWatchFallbackProps {
   id: string;
@@ -21,17 +24,22 @@ export default function ReanimeWatchFallback({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [playerProps, setPlayerProps] = useState<any>(null);
+  const [needsBridge, setNeedsBridge] = useState(false);
+  const activeRequest = useRef<AbortController | null>(null);
 
   const slug = stripReanimeId(id);
 
   const loadStream = async () => {
+    activeRequest.current?.abort();
+    const controller = new AbortController(); activeRequest.current = controller;
     setLoading(true);
     setError(null);
+    setNeedsBridge(false);
 
     try {
       let baseUrl = "https://reanime.to";
       try {
-        const settingsRes = await fetch("/api/settings/base-url?provider=reanime");
+        const settingsRes = await fetch("/api/settings/base-url?provider=reanime", {signal: controller.signal});
         const settingsData = await settingsRes.json();
         if (settingsData.success && settingsData.baseUrl) {
           baseUrl = settingsData.baseUrl;
@@ -40,13 +48,14 @@ export default function ReanimeWatchFallback({
 
       // 1. 디테일 & 에피소드 병렬 조회
       const [rDetail, rEps] = await Promise.all([
-        fetch(`${baseUrl}/api/v1/anime/${slug}`),
-        fetch(`${baseUrl}/api/v1/anime/${slug}/episodes`),
+        fetch(`${baseUrl}/api/v1/anime/${slug}`, {signal: controller.signal}),
+        fetch(`${baseUrl}/api/v1/anime/${slug}/episodes`, {signal: controller.signal}),
       ]);
 
       if (!rDetail.ok) {
         throw new Error(`작품 정보를 불러오지 못했습니다 (${rDetail.status})`);
       }
+      if (!rEps.ok) throw new Error(`회차 목록을 불러오지 못했습니다 (${rEps.status})`);
 
       const rawAnime = await rDetail.json();
       const epsJson = rEps.ok ? await rEps.json() : {};
@@ -76,38 +85,11 @@ export default function ReanimeWatchFallback({
         };
       });
 
-      // 2. Flix API 호출 (스트림 소스 가져오기)
-      let streamEmbed = "";
-      let m3u8Url = "";
-      let isIframe = true;
-
-      try {
-        const flixRes = await fetch(`${baseUrl}/api/flix/${anilistId}/${ep}`);
-        if (flixRes.ok) {
-          const flixJson = await flixRes.json();
-          const servers = Array.isArray(flixJson.servers) ? flixJson.servers : [];
-          // sub 타입 또는 첫번째 서버 우선 선택
-          const matchedServer = servers.find((s: any) => (isDub ? s.dataType === "dub" : s.dataType === "sub")) || servers[0];
-          if (matchedServer?.dataLink) {
-            const link = matchedServer.dataLink;
-            if (link.includes(".m3u8")) {
-              m3u8Url = link;
-              isIframe = false;
-            } else {
-              streamEmbed = link;
-              isIframe = true;
-            }
-          }
-        }
-      } catch (err) {
-        console.warn("[ReAnime] flix stream fetch failed, using direct watch fallback:", err);
-      }
-
-      if (!streamEmbed && !m3u8Url) {
-        // Fallback: ReAnime 자체 임베드 플레이어
-        streamEmbed = `${baseUrl}/watch/${slug}?ep=${ep}&anilist=${anilistId}`;
-        isIframe = true;
-      }
+      if (!subEpisodes.some(episode => episode.number === ep)) throw new Error('요청한 영상 회차가 없습니다.');
+      // The same authenticated server/extension resolver is used by the Korean page.
+      // Never embed the watch page: Reanime now rejects frames from other sites.
+      const stream = await loadKoreanReanimeStream({id, anilistId}, ep, controller.signal, isDub ? 'dub' : 'sub');
+      controller.signal.throwIfAborted();
 
       // 회차 번호 계산
       let linkPreEpNum: number | null = null;
@@ -130,26 +112,29 @@ export default function ReanimeWatchFallback({
         animePoster: poster,
         episodeNumber: ep,
         initialEpTitle: epTitle,
-        m3u8Url: m3u8Url ? `/api/anime/stream/m3u8?url=${encodeURIComponent(m3u8Url)}&ref=${encodeURIComponent(baseUrl)}` : "",
+        m3u8Url: "",
         defaultVttUrl: "",
         linkPreEp: linkPreEpNum,
         linkNextEp: linkNextEpNum,
         isDub,
         subEpisodes,
         dubEpisodes: [],
-        streamType: isIframe ? "iframe" : "m3u8",
-        embedUrl: streamEmbed,
+        streamType: "iframe",
+        embedUrl: stream.embed_url || stream.player_url,
       });
     } catch (err: any) {
+      if (controller.signal.aborted) return;
       console.error("[ReanimeWatchFallback error]:", err);
       setError(err?.message || "영상 스트림을 불러오는 중 오류가 발생했습니다.");
+      setNeedsBridge(err instanceof ReanimeBridgeError && err.code === 'NOT_INSTALLED');
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   };
 
   useEffect(() => {
     loadStream();
+    return () => activeRequest.current?.abort();
   }, [id, ep, isDub]);
 
   if (loading) {
@@ -172,6 +157,7 @@ export default function ReanimeWatchFallback({
           <p className="mt-2 text-sm text-slate-400">
             {error || "해당 회차 영상 소스가 아직 업로드되지 않았거나 연결이 원활하지 않습니다."}
           </p>
+          {needsBridge && <div className="mt-4 text-left"><ReanimeConnectionHelp/></div>}
           <div className="mt-6 flex items-center justify-center gap-3">
             <Link
               href={`/anime/${id}`}

@@ -82,12 +82,10 @@ test('aborting a server request cannot start a browser retry',async()=>{
     assert.equal(retried,false);
   });
 });
-test('blocked stream API restores the original watch-page iframe without a cross-origin flix request',async()=>{
+test('blocked stream API does not return the watch page that now rejects external frames',async()=>{
   const calls=[];
   await withFetch(async url=>{calls.push(url);return Response.json({code:'REANIME_UNAVAILABLE',baseUrl:base,error:'HTTP 403'},{status:502});},async()=>{
-    const stream=await loadKoreanReanimeStream({id:'re_cat',anilistId:207141},12);
-    assert.equal(stream.embed_url,'https://reanime.to/watch/cat?ep=12&anilist=207141&lang=sub');
-    assert.equal(stream.reanime_watch_page,true);
+    await assert.rejects(loadKoreanReanimeStream({id:'re_cat',anilistId:207141},12),/연결 도우미/);
     assert.equal(calls.length,1);
   });
 });

@@ -71,6 +71,7 @@ export default function IframePlayer({
   initialEpTitle,
   linkPreEp,
   linkNextEp,
+  isDub = false,
   subEpisodes = [],
   embedUrl = "",
   allowNestedPlayback = false,
@@ -81,6 +82,7 @@ export default function IframePlayer({
   watchPageUrl,
   backUrl,
 }: IframePlayerProps) {
+  const episodeUrl = (episode: number | string) => `/watch/${animeId}/${episode}${isDub ? '?dub=1' : ''}`;
   const containerRef = useRef<HTMLDivElement>(null);
   const videoSurfaceRef = useRef<HTMLDivElement>(null);
   const mirrorViewport = useReanimeViewport(allowNestedPlayback, videoSurfaceRef);
@@ -586,7 +588,7 @@ export default function IframePlayer({
         <div className="flex items-center gap-2">
           {linkPreEp && (
             <Link
-              href={`/watch/${animeId}/${linkPreEp}`}
+              href={episodeUrl(linkPreEp)}
               className="flex items-center gap-1 rounded-xl border border-white/10 bg-slate-800/80 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-purple-500 hover:text-white"
             >
               <ChevronLeft className="h-4 w-4" />
@@ -601,7 +603,7 @@ export default function IframePlayer({
                 onChange={(e) => {
                   const targetEp = e.target.value;
                   if (targetEp) {
-                    window.location.href = `/watch/${animeId}/${targetEp}`;
+                    window.location.href = episodeUrl(targetEp);
                   }
                 }}
                 className="appearance-none rounded-xl border border-purple-500/30 bg-slate-800/90 py-1.5 pl-3 pr-8 text-xs font-bold text-purple-200 outline-none transition focus:border-purple-400 cursor-pointer"
@@ -618,7 +620,7 @@ export default function IframePlayer({
 
           {linkNextEp && (
             <Link
-              href={`/watch/${animeId}/${linkNextEp}`}
+              href={episodeUrl(linkNextEp)}
               className="flex items-center gap-1 rounded-xl bg-purple-600 px-3 py-1.5 text-xs font-semibold text-white shadow-lg shadow-purple-600/30 transition hover:bg-purple-500"
             >
               다음화
@@ -647,7 +649,7 @@ export default function IframePlayer({
           style={mirrorViewport.style}
           scrolling={allowNestedPlayback && mirrorViewport.cropped ? 'no' : 'auto'}
           allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-          sandbox="allow-scripts allow-same-origin allow-fullscreen"
+          sandbox="allow-scripts allow-same-origin"
           allowFullScreen
         />
 
