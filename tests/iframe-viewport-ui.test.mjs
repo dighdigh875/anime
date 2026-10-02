@@ -16,7 +16,7 @@ const React = await import('react');
 const {createRoot} = await import('react-dom/client');
 const {default: IframePlayer} = await import('../src/components/IframePlayer.tsx');
 
-async function mount(mirror) {
+async function mount(mirror, props = {}) {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => Response.json({success: true, setting: null});
   const container = document.getElementById('root');
@@ -24,6 +24,7 @@ async function mount(mirror) {
   await React.act(async () => root.render(React.createElement(IframePlayer, {
     animeId: 're_test', animeTitle: '작품', episodeNumber: 12, initialSubtitles: [],
     embedUrl: 'https://reanime.to/watch/test?ep=12', allowNestedPlayback: mirror,
+    ...props,
   })));
   return {container, cleanup: async () => {await React.act(async () => root.unmount()); globalThis.fetch = originalFetch;}};
 }
@@ -60,4 +61,16 @@ test('direct video embeds retain their full-frame presentation', async () => {
     assert.equal(ui.container.textContent.includes('영상만 보기'), false);
     assert.equal(ui.container.querySelector('iframe').style.transform, '');
   } finally {await ui.cleanup();}
+});
+
+test('episode navigation preserves the selected dubbed language', async () => {
+  for (const isDub of [false, true]) {
+    const ui = await mount(false, {isDub, linkPreEp: 11, linkNextEp: 13});
+    try {
+      const links = [...ui.container.querySelectorAll('a')];
+      const suffix = isDub ? '?dub=1' : '';
+      assert.equal(links.find(a => a.textContent.includes('이전화')).getAttribute('href'), `/watch/re_test/11${suffix}`);
+      assert.equal(links.find(a => a.textContent.includes('다음화')).getAttribute('href'), `/watch/re_test/13${suffix}`);
+    } finally {await ui.cleanup();}
+  }
 });

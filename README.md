@@ -21,6 +21,18 @@ Next.js 15 App Router와 Vercel Serverless, Neon Postgres를 기반으로 구축
 
 작품·제작자 정보 출처: [애니시아](https://anissia.net/).
 
+### Reanime 연결 도우미
+
+Reanime 원본 페이지는 다른 사이트의 iframe에서 열 수 없습니다. 서버에서 영상 주소를 받으면 직접 플레이어를 열고, Vercel 요청이 거부될 때는 PC Chrome의 **Anihub Reanime 연결 도우미**로 같은 회차의 주소를 조회합니다. 도우미가 없으면 설치 안내를 표시합니다. 원본 페이지를 미러링하거나 브라우저 보안을 해제하지 않습니다.
+
+1. 재생 화면의 `연결 도우미 다운로드`로 ZIP을 받고 압축을 풉니다.
+2. `chrome://extensions`에서 `개발자 모드` → `압축해제된 확장 프로그램을 로드합니다` → `manifest.json`이 있는 폴더를 선택합니다.
+3. Anihub를 새로고침하고 회차를 재생합니다.
+
+현재 패키지는 `https://anime-eight-virid.vercel.app`와 `https://reanime.to`만 지원합니다. 도우미는 공개 영상 주소 조회에 로그인 쿠키를 포함하지 않으며 영상·자막·시청 기록을 저장하지 않습니다. 다른 배포 도메인으로 이전하면 [확장 기능의 허용 사이트 설정](extensions/reanime-bridge/README.md)을 함께 수정해야 합니다. 휴대폰이나 확장 기능을 설치하지 않은 브라우저에서는 서버 연결이 차단될 경우 재생할 수 없습니다.
+
+소스는 `extensions/reanime-bridge`에 있고, `npm run package:reanime-bridge`로 다운로드 ZIP을 갱신합니다. 테스트는 배포 ZIP이 검토한 소스와 일치하는지도 검사합니다.
+
 ---
 
 ## 🚀 Vercel 원클릭 배포 및 시작하기

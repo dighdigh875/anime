@@ -11,8 +11,17 @@ const settle=()=>new Promise(r=>setTimeout(r,10));
 const anime={animeNo:3440,subject:'담배 고양이',originalSubject:'ヤニねこ',startDate:'2026-07-03'};
 const subtitle={name:'번역자',episode:1,orig_filename:'1.vtt',is_ass:false,content:'WEBVTT\n\n1\n00:00:01.000 --> 00:00:03.000\n안녕하세요\n\n2\n00:00:04.000 --> 00:00:05.000\n다음 대사\n'};
 const blocked=()=>Response.json({code:'REANIME_UNAVAILABLE',baseUrl:'https://reanime.to',error:'Reanime HTTP 403'},{status:502});
-async function mount({saved=false,status='subtitles_ready',dbFailure=false,detailResponse,offset=0,prepareResponse}={}) {
+async function mount({saved=false,status='subtitles_ready',dbFailure=false,detailResponse,offset=0,prepareResponse,bridgeInstalled=true}={}) {
   const calls=[];let mapping=saved ? {reanimeId:'re_cat',episodeOffset:offset} : null;
+  const bridgeRequests=[];
+  const helper=event=>{
+    if (!bridgeInstalled || event.data?.type!=='ANIHUB_REANIME_REQUEST_V1') return;
+    bridgeRequests.push(event.data);
+    for (const data of [{type:'ANIHUB_REANIME_ACK_V1'}, {type:'ANIHUB_REANIME_RESPONSE_V1',result:{ok:true,servers:[{dataType:'sub',serverName:'HD-1',dataLink:`https://flixcloud.cc/e/cat-ep${event.data.episode}?v=1`}]}}]) {
+      window.dispatchEvent(new window.MessageEvent('message',{source:window,origin:window.location.origin,data:{...data,requestId:event.data.requestId}}));
+    }
+  };
+  window.addEventListener('message',helper);
   const old=globalThis.fetch;
   globalThis.fetch=async(url,init={})=>{
     calls.push(String(url));
@@ -33,7 +42,7 @@ async function mount({saved=false,status='subtitles_ready',dbFailure=false,detai
   const container=document.getElementById('root');const root=createRoot(container);
   await React.act(async()=>{root.render(React.createElement(KoreanAnime,{animeNo:3440}));await settle();});
   const click=async text=>{const b=[...container.querySelectorAll('button')].find(b=>b.textContent===text);assert.ok(b,`Missing button: ${text}`);await React.act(async()=>{b.click();await settle();});};
-  return {container,calls,click,render:async animeNo=>{await React.act(async()=>{root.render(React.createElement(KoreanAnime,{animeNo}));await settle();});},cleanup:async()=>{await React.act(async()=>root.unmount());globalThis.fetch=old;}};
+  return {container,calls,bridgeRequests,click,render:async animeNo=>{await React.act(async()=>{root.render(React.createElement(KoreanAnime,{animeNo}));await settle();});},cleanup:async()=>{await React.act(async()=>root.unmount());window.removeEventListener('message',helper);globalThis.fetch=old;}};
 }
 test('provider failures with simulated CORS-enabled responses preserve search, mapping and subtitle-before-stream ordering',async()=>{
   const ui=await mount();
@@ -44,7 +53,8 @@ test('provider failures with simulated CORS-enabled responses preserve search, m
     assert.match(ui.container.textContent,/작품 연결을 저장/);
     assert.equal(ui.calls.some(c=>c.includes('/api/flix/')),false);
     await ui.click('자막 확인 후 재생');
-    assert.equal(ui.container.querySelector('iframe')?.src,'https://reanime.to/watch/cat?ep=1&anilist=207141&lang=sub');
+    assert.equal(ui.container.querySelector('iframe')?.src,'https://flixcloud.cc/e/cat-ep1?v=1');
+    assert.equal(ui.bridgeRequests[0].anilistId,207141);
     assert.ok(ui.calls.indexOf('/api/anissia/prepare')<ui.calls.findIndex(c=>c.includes('/api/anissia/reanime') && c.includes('episode=')));
     assert.equal(ui.calls.some(c=>c.includes('/api/flix/')),false);
     assert.match(ui.container.textContent,/번역자/);
@@ -92,7 +102,8 @@ test('explicit playback without Korean subtitles skips subtitle acquisition and 
   try {
     assert.equal(ui.container.querySelector('iframe'),null);
     await ui.click('한글 자막 없이 재생');
-    assert.equal(ui.container.querySelector('iframe')?.src,'https://reanime.to/watch/cat?ep=2&anilist=207141&lang=sub');
+    assert.equal(ui.container.querySelector('iframe')?.src,'https://flixcloud.cc/e/cat-ep2?v=1');
+    assert.equal(ui.bridgeRequests[0].episode,2);
     assert.equal(ui.calls.some(c=>c.includes('/prepare')||c.includes('/subtitles')),false);
     assert.match(ui.container.textContent,/한글 자막 없음/);
     assert.doesNotMatch(ui.container.textContent,/자막 연동 중|자막 ON|싱크 미세조절/);
@@ -135,7 +146,7 @@ test('retrying Korean subtitles keeps the playing iframe during lookup, failure 
     assert.equal(ui.calls.filter(c=>c.includes('episode=')).length,1);
     assert.match(ui.container.textContent,/번역자/);
     assert.match(ui.container.textContent,/자막 ON/);
-    await React.act(async()=>window.dispatchEvent(new window.MessageEvent('message',{source:iframe.contentWindow,origin:'https://reanime.to',data:{currentTime:2,duration:600}})));
+    await React.act(async()=>window.dispatchEvent(new window.MessageEvent('message',{source:iframe.contentWindow,origin:'https://flixcloud.cc',data:{currentTime:2,duration:600}})));
     assert.equal(ui.container.querySelector('.font-black.text-white.text-center').textContent,'안녕하세요');
   } finally {await ui.cleanup();}
 });
@@ -148,7 +159,7 @@ test('switching episodes removes original-player playback before preparing the n
     await React.act(async()=>{select.value='2';select.dispatchEvent(new window.Event('change',{bubbles:true}));await settle();});
     assert.equal(ui.container.querySelector('iframe'),null);
     await ui.click('한글 자막 없이 재생');
-    assert.match(ui.container.querySelector('iframe').src,/ep=2&/);
+    assert.match(ui.container.querySelector('iframe').src,/cat-ep2\?/);
   } finally {await ui.cleanup();}
 });
 
@@ -182,5 +193,16 @@ test('both playback choices stay disabled when the mapped work has no available 
     }
     assert.equal(ui.container.querySelector('iframe'),null);
     assert.equal(ui.calls.some(c=>c.includes('episode=')||c.includes('/prepare')),false);
+  } finally {await ui.cleanup();}
+});
+
+test('missing browser helper shows installation guidance instead of a known-blocked watch iframe',async()=>{
+  const ui=await mount({saved:true,bridgeInstalled:false});
+  try {
+    await ui.click('한글 자막 없이 재생');
+    await React.act(async()=>new Promise(r=>setTimeout(r,1100)));
+    assert.equal(ui.container.querySelector('iframe'),null);
+    assert.match(ui.container.textContent,/연결 도우미가 필요/);
+    assert.equal(ui.container.querySelector('a[download]')?.getAttribute('href'),'/downloads/anihub-reanime-bridge.zip');
   } finally {await ui.cleanup();}
 });

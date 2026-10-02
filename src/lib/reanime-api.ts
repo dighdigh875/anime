@@ -57,14 +57,6 @@ export async function searchReanimeCandidates(
 
 export interface ReanimeDetail extends AnimeDetail { anilistId: number }
 
-export function getReanimeWatchStream(baseUrl: string, detail: ReanimeDetail, episode: number): EpisodeStreamInfo {
-  if (!/^re_[a-zA-Z0-9_-]{1,230}$/.test(detail.id) || !Number.isSafeInteger(detail.anilistId) || detail.anilistId <= 0 ||
-      !Number.isFinite(episode) || episode < 0 || episode > 10000) throw new Error('영상 작품·회차 번호를 확인하지 못했습니다.');
-  const url = `${reanimeOrigin(baseUrl)}/watch/${detail.id.slice(3)}?ep=${episode}&anilist=${detail.anilistId}&lang=sub`;
-  return {success: true, embed_url: url, player_url: url, reanime_watch_page: true, stream_type: 'iframe',
-    m3u8_url: '', vtt_url: '', server_sources: [], link_next: '', link_pre: ''};
-}
-
 export async function getReanimeDetail(baseUrl: string, id: string, signal?: AbortSignal): Promise<ReanimeDetail> {
   if (!/^re_[a-zA-Z0-9_-]{1,230}$/.test(id)) throw new Error('잘못된 Reanime 작품 번호입니다.');
   const slug = id.slice(3);
@@ -89,18 +81,22 @@ export async function getReanimeDetail(baseUrl: string, id: string, signal?: Abo
   };
 }
 
-export async function getReanimeStream(baseUrl: string, anilistId: number, episode: number, signal?: AbortSignal): Promise<EpisodeStreamInfo> {
+export async function getReanimeStream(baseUrl: string, anilistId: number, episode: number, signal?: AbortSignal, language: 'sub' | 'dub' = 'sub'): Promise<EpisodeStreamInfo> {
   if (!Number.isSafeInteger(anilistId) || anilistId <= 0 || !Number.isFinite(episode) || episode < 0 || episode > 10000) {
     throw new Error('영상 작품·회차 번호를 확인하지 못했습니다.');
   }
   const json = await request(baseUrl, `/api/flix/${anilistId}/${episode}`, signal);
+  return parseReanimeStream(json, language);
+}
+
+export function parseReanimeStream(json: any, language: 'sub' | 'dub' = 'sub'): EpisodeStreamInfo {
   const servers = (Array.isArray(json?.servers) ? json.servers : []).filter((s: any) => {
-    if (s?.dataType !== 'sub' || typeof s.dataLink !== 'string') return false;
+    if (s?.dataType !== language || typeof s.dataLink !== 'string') return false;
     try {const url = new URL(s.dataLink); return url.protocol === 'https:' && !url.username && !url.password && !/\.m3u8$/i.test(url.pathname);}
     catch {return false;}
   });
   const selected = servers.find((s: any) => s.serverName === 'HD-1') || servers[0];
   if (!selected) throw new ReanimeRequestError('자막용 영상 플레이어를 찾지 못했습니다.');
   return {success: true, embed_url: selected.dataLink, player_url: selected.dataLink, stream_type: 'iframe', m3u8_url: '', vtt_url: '',
-    server_sources: servers.map((s: any) => ({label: `${s.serverName || 'HD'} (sub)`, player_url: s.dataLink})), link_next: '', link_pre: ''};
+    server_sources: servers.map((s: any) => ({label: `${s.serverName || 'HD'} (${language})`, player_url: s.dataLink})), link_next: '', link_pre: ''};
 }
