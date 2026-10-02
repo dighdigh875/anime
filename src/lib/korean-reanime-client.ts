@@ -8,7 +8,7 @@ export async function requestWithReanimeFallback<T>(url: string, direct: (baseUr
   signal?.throwIfAborted();
   if (response.ok) return data;
   // Only retry a provider failure. Login/DB/Anissia failures must stay visible.
-  if (data.code !== 'REANIME_UNAVAILABLE' || typeof data.baseUrl !== 'string') throw new Error(data.error || '요청에 실패했습니다.');
+  if (data.code !== 'REANIME_UNAVAILABLE' || data.browserFallback === false || typeof data.baseUrl !== 'string') throw new Error(data.error || '요청에 실패했습니다.');
   try { return await direct(data.baseUrl); }
   catch (error) {
     if (signal?.aborted || error instanceof ReanimeBridgeError) throw error;

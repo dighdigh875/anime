@@ -48,3 +48,6 @@ next-env.d.ts
 !/README.md
 !/readme.md
 !/extensions/reanime-bridge/README.md
+!/workers/reanime-relay/README.md
+**/.dev.vars*
+**/.wrangler/

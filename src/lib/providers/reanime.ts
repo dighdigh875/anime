@@ -10,6 +10,7 @@ import {
 } from "./types";
 import { REANIME_PREFIX, stripReanimeId, toReanimeId } from "./index";
 import { getReanimeBaseUrl, DEFAULT_REANIME_URL } from "@/lib/db";
+import { fetchReanimeServer } from "@/lib/reanime-server-fetch";
 
 export const BASE_URL = DEFAULT_REANIME_URL;
 
@@ -87,7 +88,7 @@ async function fetchHomeData(): Promise<any> {
 
   // 1순위: 공식 순수 JSON REST API 시도 (/api/v1/home)
   try {
-    const res = await fetch(`${baseUrl}/api/v1/home`, {
+    const res = await fetchReanimeServer(`${baseUrl}/api/v1/home`, {
       headers,
       signal: AbortSignal.timeout(8000),
       cache: "no-store",
@@ -105,7 +106,7 @@ async function fetchHomeData(): Promise<any> {
 
   // 2순위: SvelteKit __data.json 백업 엔드포인트
   try {
-    const res = await fetch(`${baseUrl}/home/__data.json`, {
+    const res = await fetchReanimeServer(`${baseUrl}/home/__data.json`, {
       headers,
       signal: AbortSignal.timeout(8000),
       cache: "no-store",
@@ -272,7 +273,7 @@ export async function searchAnime(keyword: string, page = 1): Promise<AnimeListR
   // 순차 검색 시도 (결과가 발견되면 즉시 반환)
   for (const term of searchTerms) {
     try {
-      const res = await fetch(`${baseUrl}/api/v1/search?q=${encodeURIComponent(term)}`, {
+      const res = await fetchReanimeServer(`${baseUrl}/api/v1/search?q=${encodeURIComponent(term)}`, {
         headers,
         signal: AbortSignal.timeout(8000),
       });
@@ -315,12 +316,12 @@ export async function getAnimeDetail(animeId: string): Promise<AnimeDetail | nul
   // 1순위: 공식 순수 JSON REST API 시도 (/api/v1/anime/:slug & /episodes)
   try {
     const [rDetail, rEps] = await Promise.all([
-      fetch(`${baseUrl}/api/v1/anime/${slug}`, {
+      fetchReanimeServer(`${baseUrl}/api/v1/anime/${slug}`, {
         headers,
         signal: AbortSignal.timeout(8000),
         cache: "no-store",
       }),
-      fetch(`${baseUrl}/api/v1/anime/${slug}/episodes`, {
+      fetchReanimeServer(`${baseUrl}/api/v1/anime/${slug}/episodes`, {
         headers,
         signal: AbortSignal.timeout(8000),
         cache: "no-store",
@@ -383,7 +384,7 @@ export async function getAnimeDetail(animeId: string): Promise<AnimeDetail | nul
 
   // 2순위: SvelteKit __data.json 백업 엔드포인트
   try {
-    const res = await fetch(`${baseUrl}/watch/${slug}/__data.json?ep=1`, {
+    const res = await fetchReanimeServer(`${baseUrl}/watch/${slug}/__data.json?ep=1`, {
       headers,
       signal: AbortSignal.timeout(10000),
       cache: "no-store",
@@ -483,7 +484,7 @@ export async function getEpisodeStream(watchUrl: string): Promise<EpisodeStreamI
     }
 
     const headers = { ...REANIME_HEADERS, Referer: `${baseUrl}/` };
-    const res = await fetch(`${baseUrl}/api/flix/${anilistIdStr}/${ep}`, {
+    const res = await fetchReanimeServer(`${baseUrl}/api/flix/${anilistIdStr}/${ep}`, {
       headers,
       signal: AbortSignal.timeout(10000),
     });
